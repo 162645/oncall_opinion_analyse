@@ -1,0 +1,3 @@
+# Full local-development profile
+-r requirements-base.txt
+-r requirements-ai-docs.txt

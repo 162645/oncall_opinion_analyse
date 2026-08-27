@@ -1,0 +1,86 @@
+.skill-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+.stats-cards {
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+.stats-cards .semi-card {
+  text-align: center;
+}
+
+/* 修复表格标签重叠问题 */
+.skill-page .semi-table-tbody td {
+  vertical-align: middle;
+}
+
+.skill-page .semi-tag {
+  margin: 2px 4px 2px 0;
+  white-space: nowrap;
+}
+
+/* 标签容器 - 防止溢出 */
+.skill-page .semi-space {
+  flex-wrap: wrap;
+}
+
+/* 表格行悬停效果 */
+.skill-page .semi-table-row:hover {
+  background: #f5f5f5;
+}
+
+/* 描述列省略 */
+.skill-page .semi-table-cell {
+  max-width: 300px;
+}
+
+/* 操作按钮组 */
+.skill-page .semi-space-item .semi-button {
+  margin-right: 4px;
+}
+
+/* Tab面板滚动 */
+.skill-page .semi-tabs-pane {
+  overflow-y: auto;
+}
+
+/* 统计卡片样式 */
+.skill-page .semi-row {
+  margin-bottom: 16px;
+}
+
+.skill-page .semi-col {
+  padding: 0 8px;
+}
+
+/* 响应式布局 */
+@media (max-width: 1200px) {
+  .skill-page .semi-col {
+    padding: 0 4px;
+  }
+}
+
+@media (max-width: 768px) {
+  .skill-page .semi-row {
+    flex-direction: column;
+  }
+
+  .skill-page .semi-col {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin-bottom: 8px;
+  }
+}

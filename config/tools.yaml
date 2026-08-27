@@ -1,0 +1,295 @@
+# MCP Toolbox 完整配置文件
+# 用于连接 ClickHouse 网络测量数据和补充数据源
+
+# ==================== 数据源配置 ====================
+
+# ClickHouse - 网络测量数据（主数据源）
+kind: sources
+name: clickhouse-network
+type: clickhouse
+host: ${CLICKHOUSE_HOST}
+port: ${CLICKHOUSE_PORT:-8123}
+database: ${CLICKHOUSE_DATABASE:-network_telemetry}
+user: ${CLICKHOUSE_USER}
+password: ${CLICKHOUSE_PASSWORD}
+protocol: ${CLICKHOUSE_PROTOCOL:-https}
+secure: ${CLICKHOUSE_SECURE:-true}
+
+---
+# MySQL - 配置数据（补充数据源）
+kind: sources
+name: mysql-config
+type: mysql
+host: ${MYSQL_HOST}
+port: ${MYSQL_PORT:-3306}
+database: ${MYSQL_DATABASE:-oncall_config}
+user: ${MYSQL_USER}
+password: ${MYSQL_PASSWORD}
+
+---
+# Redis - 缓存（补充数据源）
+kind: sources
+name: redis-cache
+type: redis
+host: ${REDIS_HOST}
+port: ${REDIS_PORT:-6379}
+password: ${REDIS_PASSWORD}
+
+# ==================== 网络测量工具 ====================
+
+---
+# 工具：查询网络延迟
+kind: tools
+name: query-network-latency
+type: clickhouse-execute-sql
+source: clickhouse-network
+description: |
+  查询网络延迟数据，包括平均延迟、P99/P95延迟、丢包率等。
+  用于故障诊断时的网络性能分析。
+parameters:
+  - name: start_time
+    type: string
+    description: "开始时间 (ISO 8601格式，如 2025-01-01T00:00:00Z)"
+    required: true
+  - name: end_time
+    type: string
+    description: "结束时间 (ISO 8601格式)"
+    required: true
+  - name: source_region
+    type: string
+    description: "源区域过滤（如 Singapore-Central, US-East）"
+    required: false
+  - name: target_region
+    type: string
+    description: "目标区域过滤"
+    required: false
+statement: |
+  SELECT
+    timestamp,
+    source_region,
+    target_region,
+    avg_latency_ms,
+    p99_latency_ms,
+    p95_latency_ms,
+    min_latency_ms,
+    max_latency_ms,
+    packet_loss_rate,
+    throughput_mbps,
+    connection_count
+  FROM network_latency
+  WHERE timestamp BETWEEN {start_time} AND {end_time}
+    AND ({source_region} = '' OR source_region = {source_region})
+    AND ({target_region} = '' OR target_region = {target_region})
+  ORDER BY timestamp
+  LIMIT 1000
+
+---
+# 工具：查询网络异常事件
+kind: tools
+name: query-network-anomalies
+type: clickhouse-execute-sql
+source: clickhouse-network
+description: |
+  查询网络异常事件，包括延迟突增、丢包、连接失败等。
+  用于故障诊断时快速定位异常时段和事件。
+parameters:
+  - name: time_range_minutes
+    type: integer
+    description: "查询时间范围（分钟）"
+    required: true
+  - name: severity
+    type: string
+    description: "严重级别过滤 (warning/critical)"
+    required: false
+  - name: event_type
+    type: string
+    description: "事件类型过滤 (latency_spike/packet_loss/connection_failure/dns_error)"
+    required: false
+  - name: region
+    type: string
+    description: "区域过滤"
+    required: false
+statement: |
+  SELECT
+    event_time,
+    event_id,
+    event_type,
+    severity,
+    source_region,
+    target_region,
+    source_ip,
+    target_ip,
+    metric_value,
+    threshold,
+    duration_seconds,
+    details
+  FROM network_events
+  WHERE event_time > now() - INTERVAL {time_range_minutes} MINUTE
+    AND ({severity} = '' OR severity = {severity})
+    AND ({event_type} = '' OR event_type = {event_type})
+    AND ({region} = '' OR source_region = {region} OR target_region = {region})
+  ORDER BY event_time DESC, severity
+  LIMIT 100
+
+---
+# 工具：查询流量统计
+kind: tools
+name: query-traffic-stats
+type: clickhouse-execute-sql
+source: clickhouse-network
+description: |
+  查询流量统计信息，包括入站/出站流量、连接数、请求量等。
+  用于容量分析和异常流量检测。
+parameters:
+  - name: start_time
+    type: string
+    description: "开始时间"
+    required: true
+  - name: end_time
+    type: string
+    description: "结束时间"
+    required: true
+  - name: granularity
+    type: string
+    description: "聚合粒度 (1m/5m/1h/1d)"
+    required: false
+  - name: region
+    type: string
+    description: "区域过滤"
+    required: false
+statement: |
+  SELECT
+    toStartOfInterval(timestamp, INTERVAL {granularity}) as time_bucket,
+    source_region,
+    sum(inbound_bytes) as total_inbound_bytes,
+    sum(outbound_bytes) as total_outbound_bytes,
+    avg(active_connections) as avg_connections,
+    max(active_connections) as max_connections,
+    sum(request_count) as total_requests
+  FROM traffic_stats
+  WHERE timestamp BETWEEN {start_time} AND {end_time}
+    AND ({region} = '' OR source_region = {region})
+  GROUP BY time_bucket, source_region
+  ORDER BY time_bucket
+  LIMIT 500
+
+---
+# 工具：查询链路质量
+kind: tools
+name: query-link-quality
+type: clickhouse-execute-sql
+source: clickhouse-network
+description: |
+  查询端到端链路质量，包括延迟、抖动、丢包、健康分数等。
+  用于跨区域链路健康检查和问题定位。
+parameters:
+  - name: start_time
+    type: string
+    required: true
+  - name: end_time
+    type: string
+    required: true
+  - name: link_id
+    type: string
+    description: "链路ID (格式: source_region-target_region，如 Singapore-Central-US-East)"
+    required: false
+statement: |
+  SELECT
+    timestamp,
+    link_id,
+    source_region,
+    target_region,
+    avg_rtt_ms,
+    min_rtt_ms,
+    max_rtt_ms,
+    jitter_ms,
+    loss_rate,
+    health_score,
+    status,
+    alert_count
+  FROM link_quality
+  WHERE timestamp BETWEEN {start_time} AND {end_time}
+    AND ({link_id} = '' OR link_id = {link_id})
+  ORDER BY timestamp DESC
+  LIMIT 1000
+
+---
+# 工具：查询历史告警
+kind: tools
+name: query-historical-alerts
+type: clickhouse-execute-sql
+source: clickhouse-network
+description: |
+  查询历史告警记录，用于趋势分析和相似告警匹配。
+parameters:
+  - name: time_range_days
+    type: integer
+    description: "查询时间范围（天）"
+    required: true
+  - name: alert_type
+    type: string
+    description: "告警类型过滤"
+    required: false
+  - name: psm
+    type: string
+    description: "PSM 过滤"
+    required: false
+  - name: severity
+    type: string
+    description: "严重级别过滤"
+    required: false
+statement: |
+  SELECT
+    alert_time,
+    alert_id,
+    alert_type,
+    severity,
+    psm,
+    title,
+    description,
+    source_region,
+    resolved_time,
+    resolution_time_seconds,
+    root_cause_category
+  FROM alert_history
+  WHERE alert_time > now() - INTERVAL {time_range_days} DAY
+    AND ({alert_type} = '' OR alert_type = {alert_type})
+    AND ({psm} = '' OR psm = {psm})
+    AND ({severity} = '' OR severity = {severity})
+  ORDER BY alert_time DESC
+  LIMIT 100
+
+---
+# 工具：分析延迟趋势
+kind: tools
+name: analyze-latency-trend
+type: clickhouse-execute-sql
+source: clickhouse-network
+description: |
+  分析延迟趋势，对比当前值与历史基线。
+  用于检测异常延迟变化。
+parameters:
+  - name: region
+    type: string
+    description: "区域"
+    required: true
+  - name: metric
+    type: string
+    description: "指标类型 (avg/p99/max)"
+    required: false
+  - name: days
+    type: integer
+    description: "分析天数"
+    required: false
+statement: |
+  SELECT
+    toDate(timestamp) as date,
+    avg(avg_latency_ms) as daily_avg,
+    quantile(0.99)(avg_latency_ms) as daily_p99,
+    max(max_latency_ms) as daily_max,
+    min(min_latency_ms) as daily_min
+  FROM network_latency
+  WHERE source_region = {region}
+    AND timestamp > now() - INTERVAL {days} DAY
+  GROUP BY date
+  ORDER BY date

@@ -1,0 +1,26 @@
+services:
+  oncall-clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: oncall-clickhouse
+    hostname: oncall-clickhouse
+    environment:
+      CLICKHOUSE_DB: net_measure
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "18123:8123"
+      - "19000:9000"
+    volumes:
+      - /var/lib/oncall-clickhouse:/var/lib/clickhouse
+    networks:
+      - oncall-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+networks:
+  oncall-network:
+    external: true
+    name: docker_oncall-network

@@ -1,0 +1,48 @@
+# Python AI 服务 Dockerfile
+# 支持同时运行 HTTP 和 gRPC 服务
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 国内云服务器优先使用阿里云 PyPI 镜像，避免默认 pypi.org 下载超时/限速。
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+ARG INSTALL_AI_DOCS=0
+
+# 使用国内 Debian 镜像，避免海外软件源在部分云服务器上超时
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Python 依赖
+COPY requirements-base.txt requirements-ai-docs.txt ./
+COPY wheelhouse/ /opt/oncall-wheelhouse/
+RUN if find /opt/oncall-wheelhouse -type f ! -name '.gitkeep' -print -quit | grep -q .; then \
+      pip install --no-index --find-links=/opt/oncall-wheelhouse --prefer-binary -r requirements-base.txt; \
+    else \
+      pip install --no-cache-dir --prefer-binary -r requirements-base.txt; \
+    fi && \
+    if [ "$INSTALL_AI_DOCS" = "1" ]; then pip install --no-cache-dir --prefer-binary -r requirements-ai-docs.txt; fi
+
+# 复制源代码
+COPY src/ ./src/
+COPY proto/ ./proto/
+COPY proto_gen/ ./proto_gen/
+
+# 暴露端口
+# 8000: HTTP (FastAPI)
+# 50051: gRPC
+EXPOSE 8000 50051
+
+# 设置环境变量
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+# 启动命令 (双模式: HTTP + gRPC)
+CMD ["python", "-m", "src.grpc_service.server", "--mode", "dual", "--http-port", "8000", "--grpc-port", "50051"]

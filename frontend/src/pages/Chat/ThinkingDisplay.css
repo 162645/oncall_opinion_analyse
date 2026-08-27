@@ -1,0 +1,180 @@
+.thinking-display {
+  margin-top: 12px;
+  border: 1px solid var(--semi-color-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.thinking-active {
+  border-color: var(--semi-color-primary);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.02);
+}
+
+.thinking-header-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--semi-color-bg-1);
+  border-bottom: 1px solid var(--semi-color-border);
+}
+
+.thinking-placeholder {
+  padding: 24px;
+  text-align: center;
+  background: var(--semi-color-bg-1);
+}
+
+.thinking-content {
+  padding: 12px;
+}
+
+.thinking-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--semi-color-border);
+}
+
+/* Timeline 模式 */
+.thinking-timeline {
+  padding: 8px 0;
+}
+
+.thinking-timeline .semi-timeline-item-content {
+  padding-bottom: 16px;
+}
+
+.timeline-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.thinking-step {
+  border: 1px solid var(--semi-color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.thinking-step.clickable {
+  cursor: pointer;
+}
+
+.thinking-step.clickable:hover {
+  border-color: var(--semi-color-primary-hover);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.thinking-step-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--semi-color-bg-1);
+}
+
+.thinking-step-content {
+  padding: 12px;
+  background: var(--semi-color-bg-2);
+  border-top: 1px solid var(--semi-color-border);
+}
+
+/* Simple 模式 */
+.thinking-steps-simple {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thinking-step-simple {
+  border: 1px solid var(--semi-color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.thinking-step-simple-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--semi-color-bg-1);
+}
+
+.step-icon {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+}
+
+.thinking-step-simple-content {
+  padding: 8px 12px;
+  background: var(--semi-color-bg-2);
+}
+
+/* 思考中指示器 */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  margin-top: 8px;
+  background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.02), transparent);
+  border-radius: 4px;
+}
+
+/* 动画 */
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+.thinking-active .thinking-indicator {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Semi Design 覆盖样式 */
+.thinking-display .semi-collapse-content {
+  padding: 0;
+}
+
+.thinking-display .semi-collapse-item {
+  margin-bottom: 0;
+}
+
+.thinking-display .semi-collapse-header {
+  padding: 12px 16px;
+  background: var(--semi-color-bg-1);
+}
+
+/* 展开状态 */
+.thinking-step.expanded .thinking-step-content {
+  max-height: none;
+}
+
+.thinking-step:not(.expanded) .thinking-step-content {
+  max-height: 100px;
+  overflow: hidden;
+  position: relative;
+}
+
+.thinking-step:not(.expanded) .thinking-step-content::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  background: linear-gradient(transparent, var(--semi-color-bg-2));
+  pointer-events: none;
+}

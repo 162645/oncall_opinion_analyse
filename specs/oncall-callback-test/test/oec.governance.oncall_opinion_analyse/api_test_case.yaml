@@ -1,0 +1,160 @@
+test_suite:
+  name: "API Test Suite for Oncall Callback Handler"
+  test_cases:
+    # 接口 1: GetOncallCallback
+    - id: "TC_001"
+      name: "正常工单回调处理"
+      priority: "P0"
+      description: "验证 Oncall 工单回调处理正常工作"
+      steps:
+        - name: "调用 GetOncallCallback 接口"
+          request:
+            type: "HTTP"
+            api: "/api/v1/oec/oncall/workorder/callback"
+            method: "POST"
+            headers:
+              Content-Type: "application/json"
+            params: {}
+            body:
+              token: "test-token-12345"
+              tenant_id: 1001
+              action: "init"
+              oncall_flow:
+                id: 123456789
+                tenant_id: 1001
+                level: "P0"
+                stage: "in_progress"
+                name: "测试工单"
+                source_location: "https://oncall.bytedance.net/test"
+                create_time: "2026-04-29T10:00:00Z"
+                is_solved: false
+              version: 1
+          extract: {}
+          asserts:
+            - expression: "status_code == 200"
+              description: "HTTP 状态码应为 200"
+            - expression: "jsonpath('$.code') == 0"
+              description: "业务响应码应为 0 (Success)"
+
+    # 接口 2: GetOncallArgosDIYCardCallback - WorkOrderLevel 类型
+    - id: "TC_002"
+      name: "WorkOrderLevel 类型卡片构建"
+      priority: "P0"
+      description: "验证 WorkOrderLevel 类型告警的 DIY 卡片构建"
+      steps:
+        - name: "调用 GetOncallArgosDIYCardCallback 接口 (WorkOrderLevel)"
+          request:
+            type: "HTTP"
+            api: "/api/v1/oec/governance/qa/argos/callback"
+            method: "POST"
+            headers:
+              Content-Type: "application/json"
+            params: {}
+            body:
+              rule_id: 12345678
+              alert_timestamp: 1714387200
+              alert_context:
+                tags:
+                  - key: "metricType"
+                    value: "WorkOrderLevel"
+                  - key: "originalOncallId"
+                    value: "123456789"
+                  - key: "WorkOrderLevel"
+                    value: "P0"
+                vars: []
+                descriptions: []
+          extract: {}
+          asserts:
+            - expression: "status_code == 200"
+              description: "HTTP 状态码应为 200"
+            - expression: "jsonpath('$.code') == 0"
+              description: "业务响应码应为 0"
+
+    # 接口 2: GetOncallArgosDIYCardCallback - 通用卡片
+    - id: "TC_003"
+      name: "通用卡片构建"
+      priority: "P0"
+      description: "验证非 WorkOrderLevel 类型告警的通用卡片构建"
+      steps:
+        - name: "调用 GetOncallArgosDIYCardCallback 接口 (通用)"
+          request:
+            type: "HTTP"
+            api: "/api/v1/oec/governance/qa/argos/callback"
+            method: "POST"
+            headers:
+              Content-Type: "application/json"
+            params: {}
+            body:
+              rule_id: 12345678
+              alert_timestamp: 1714387200
+              alert_context:
+                tags:
+                  - key: "service"
+                    value: "test-service"
+                vars: []
+                descriptions: []
+          extract: {}
+          asserts:
+            - expression: "status_code == 200"
+              description: "HTTP 状态码应为 200"
+            - expression: "jsonpath('$.code') == 0"
+              description: "业务响应码应为 0"
+
+    # 接口 3: HandleAlarmCallback
+    - id: "TC_004"
+      name: "正常告警回调转发"
+      priority: "P0"
+      description: "验证告警回调代理正常转发（注意：需要 sg1 区域有 OsgwWareAlarmConfigRecord 配置）"
+      steps:
+        - name: "调用 HandleAlarmCallback 接口"
+          request:
+            type: "HTTP"
+            api: "/osgw_v4/api/osgw/wares_alarm/alarm_detail/callback"
+            method: "POST"
+            headers:
+              Content-Type: "application/json"
+            params: {}
+            body:
+              alarm_data:
+                rule_uid: "rule-12345"
+                rule_name: "测试告警规则"
+                check_vregion: "sg1"
+                alert_time: "2026-04-29T10:00:00Z"
+                tags:
+                  - key: "service"
+                    value: "test-service"
+                vars:
+                  - key: "alert_level"
+                    value: "P0"
+                alarm_foreign_id:
+                  send_item_id: "send-12345"
+                user_action_result:
+                  acked: false
+                  action_type_from: ""
+          extract: {}
+          asserts:
+            - expression: "status_code == 200"
+              description: "HTTP 状态码应为 200"
+            - expression: "jsonpath('$.err_code') in [0, -1]"
+              description: "业务响应码应为 0（有配置）或 -1（无配置，预期行为）"
+
+    # 接口 4: Ping
+    - id: "TC_005"
+      name: "健康检查"
+      priority: "P0"
+      description: "验证服务健康检查接口"
+      steps:
+        - name: "调用 Ping 接口"
+          request:
+            type: "HTTP"
+            api: "/ping"
+            method: "GET"
+            headers: {}
+            params: {}
+            body: {}
+          extract: {}
+          asserts:
+            - expression: "status_code == 200"
+              description: "HTTP 状态码应为 200"
+            - expression: "jsonpath('$.message') == 'pong'"
+              description: "响应消息应为 pong"

@@ -1,0 +1,128 @@
+.filter-panel {
+  margin-bottom: 16px;
+}
+
+.filter-header {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--semi-color-border);
+  margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.filter-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.section-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.filter-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-label {
+  font-weight: 500;
+  color: var(--semi-color-text-2);
+  font-size: 13px;
+}
+
+.filter-label .required {
+  color: var(--semi-color-danger);
+  margin-left: 2px;
+}
+
+.filter-actions {
+  padding-top: 12px;
+  border-top: 1px solid var(--semi-color-border);
+  margin-top: 8px;
+}
+
+.advanced-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.active-filters {
+  padding: 12px;
+  background: var(--semi-color-bg-1);
+  border-radius: 6px;
+  margin-top: 8px;
+}
+
+/* 分位数选择器样式 */
+.percentile-selector {
+  background: var(--semi-color-bg-1);
+  padding: 12px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.percentile-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.percentile-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.percentile-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--semi-color-border);
+}
+
+/* Semi Design 覆盖 */
+.filter-panel .semi-radio-buttonRadioGroup {
+  flex-wrap: wrap;
+}
+
+.filter-panel .semi-radio-buttonRadioGroup .semi-radio {
+  margin-bottom: 4px;
+}
+
+.filter-panel .semi-slider {
+  margin-left: 0;
+}
+
+.filter-panel .semi-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .percentile-selector {
+    padding: 8px;
+  }
+
+  .percentile-presets .semi-space {
+    flex-wrap: wrap;
+  }
+}

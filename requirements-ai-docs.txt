@@ -1,0 +1,6 @@
+# Optional AI/document/chart profile
+python-docx>=1.1.0
+PyMuPDF>=1.23.0
+pdfplumber>=0.10.0
+FlagEmbedding>=1.2.0
+matplotlib>=3.7.0
