@@ -59,6 +59,7 @@ artifacts/
 *.png
 *.jpg
 *.jpeg
+!docs/assets/*.png
 # Locally generated Python wheel cache (kept outside source control)
 wheelhouse/*
 !wheelhouse/.gitkeep

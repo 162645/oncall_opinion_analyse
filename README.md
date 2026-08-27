@@ -14,6 +14,14 @@
 
 ![系统架构图](docs/assets/architecture.svg)
 
+### 实际界面
+
+![智能对话界面](docs/assets/chat-ui.png)
+
+![Ping 数据分析界面](docs/assets/ping-analysis-ui.png)
+
+![Traceroute 分析界面](docs/assets/traceroute-analysis-ui.png)
+
 前端通过 Nginx 访问 FastAPI/gRPC 服务；Agent Harness 负责意图识别、规划、MCP 工具调用、RAG 检索和最终回答生成；ClickHouse 保存测量数据，Redis 保存会话状态，Qdrant 保存知识向量。
 
 ## 核心能力
