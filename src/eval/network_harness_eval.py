@@ -16,6 +16,9 @@ class NetworkEvalCase:
     expected_queries: tuple[str, ...]
     expected_verdict: str
     expected_cross_status: str | None = None
+    allowed_facts: tuple[str, ...] = ()
+    forbidden_facts: tuple[str, ...] = ()
+    case_type: str = "real_data_replay"
 
 
 DEFAULT_CASES = (
@@ -55,14 +58,27 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
     selected = bool(expected <= (plan_queries | evidence_queries)) if expected else not evidence_queries
     claim_ids = {item.get("evidence_id") for item in evidence if item.get("status") == "observed"}
     claims = state.get("answer", {}).get("claims", [])
-    grounded = all(set(claim.get("evidence_ids", [])) <= claim_ids for claim in claims)
+    allowed = set(state.get("eval_allowed_facts", case.allowed_facts))
+    forbidden = set(state.get("eval_forbidden_facts", case.forbidden_facts))
+    # Harness claims use ``fact``; ReAct claims use ``fact_type``.  Evidence
+    # ids are necessary but not sufficient: a causal fact cannot be smuggled
+    # in merely because some unrelated observation exists.
+    unsupported = 0
+    for claim in claims:
+        fact = claim.get("fact") or claim.get("fact_type")
+        bound = set(claim.get("evidence_ids", []))
+        supporting_queries = set(claim.get("supporting_query_ids", []))
+        fact_ok = not allowed or (fact in allowed and fact not in forbidden)
+        evidence_ok = (not bound or bound <= claim_ids) and bool(bound or supporting_queries)
+        if not (fact_ok and evidence_ok) or fact in forbidden:
+            unsupported += 1
     cross_status = verification.get("checks", {}).get("cross_evidence", {}).get("status")
     return {
         "case_id": case.case_id,
         "task_spec_accuracy": task.get("kind") == "network_analysis",
         "query_selection_accuracy": selected,
         "evidence_coverage": len(expected & evidence_queries) / len(expected) if expected else float(not evidence_queries),
-        "unsupported_claim_rate": 0.0 if grounded else 1.0,
+        "unsupported_claim_rate": unsupported / len(claims) if claims else 0.0,
         "correct_abstain": verification.get("verdict") == case.expected_verdict,
         "cross_status_match": case.expected_cross_status is None or cross_status == case.expected_cross_status,
         "rounds": state.get("round", 0),
