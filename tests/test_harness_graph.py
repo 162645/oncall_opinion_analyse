@@ -65,3 +65,41 @@ def test_verifier_can_replan_after_round_three():
         "plan": {"steps": [{"query_id": "trace.paths"}]},
         "round": 3, "max_rounds": 4,
     }) == "planner"
+
+
+def test_harness_owns_one_runtime_for_all_graph_rounds():
+    harness = EvidenceDrivenHarness()
+    executor_node = harness.graph.nodes["executor"]
+    assert harness.runtime is not None
+    assert len(harness.runtime.definitions()) >= 7
+
+
+@pytest.mark.asyncio
+async def test_full_four_round_drilldown_with_fake_clickhouse(monkeypatch):
+    class FakeClient:
+        def execute(self, sql, _params):
+            if "GROUP BY ip_asn" in sql:
+                return [(64500, 100, 100, 180.0, 240.0), (64501, 100, 100, 60.0, 80.0)]
+            if "GROUP BY prefix24" in sql:
+                return [("203.0.113.0/24", 100, 100, 180.0, 240.0)]
+            if "uniqExact(ip_path_hash)" in sql:
+                return [("2026-01-01 01:00:00", 2, 100)]
+            if "ip_path_hash" in sql:
+                return [(123, 100, 8.0, 99)]
+            if "toStartOfHour" in sql:
+                return [("2026-01-01 01:00:00", 100, 100, 100.0, 110.0, 180.0)]
+            return [(100, 100, 100.0, 110.0, 150.0, 180.0)]
+
+    monkeypatch.setattr("src.harness.nodes.get_clickhouse_client", lambda: FakeClient())
+    result = await EvidenceDrivenHarness().execute(
+        "分析 UKRAINE 最近 24 小时延迟异常原因", session_id="fake-four-round"
+    )
+    assert result.success is True
+    assert result.state["round"] == 4
+    assert result.state["verification"]["verdict"] == "PASS"
+    assert {item["query_id"] for item in result.state["execution"]["evidence"]} >= {
+        "ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24", "trace.paths", "trace.path_change"
+    }
+    evidence_ids = {item["evidence_id"] for item in result.chart_data["evidence"]}
+    assert result.chart_data["claims"]
+    assert all(set(claim["evidence_ids"]) <= evidence_ids for claim in result.chart_data["claims"])

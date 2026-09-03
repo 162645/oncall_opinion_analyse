@@ -4,6 +4,7 @@ import pytest
 
 from src.harness.catalog import CATALOG, compile_sql, read_sql
 from src.harness.nodes import understand, planner, executor, synthesizer, _steps, _chart_specs
+from src.harness.ledger import EvidenceLedger
 
 
 @pytest.mark.asyncio
@@ -119,6 +120,17 @@ async def test_synthesizer_claims_reference_only_ledger_evidence():
     assert claim["evidence_ids"] == ["E1"]
     assert claim["fact"] == "p95_spike_detected"
     assert {item["evidence_id"] for item in update["answer"]["evidence"]} == {"E1"}
+
+
+def test_ledger_preserves_provenance_and_distinguishes_ids_from_query_ids():
+    ledger = EvidenceLedger([{"evidence_id": "E1", "query_id": "ping.summary", "status": "observed",
+                              "observed_at": "2026-01-01T00:00:00+00:00", "source": "clickhouse",
+                              "params": {"region": "UKRAINE"}, "trace_id": "run-1"}])
+    assert ledger.has("ping.summary") is True
+    assert ledger.contains("E1", observed_only=True) is True
+    item = ledger.all()[0]
+    assert item["observed_at"].startswith("2026-01-01")
+    assert item["trace_id"] == "run-1"
 
 
 @pytest.mark.asyncio

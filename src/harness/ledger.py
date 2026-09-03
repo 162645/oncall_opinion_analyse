@@ -17,7 +17,9 @@ class EvidenceLedger:
             raise ValueError("evidence_id is required")
         normalized = {"evidence_id": evidence_id, "query_id": item.get("query_id", "unknown"),
                       "status": item.get("status", "unavailable"), "data": item.get("data"),
-                      "error": item.get("error"), "quality": item.get("quality", "unknown")}
+                      "error": item.get("error"), "quality": item.get("quality", "unknown"),
+                      "source": item.get("source", "unknown"), "params": dict(item.get("params") or {}),
+                      "observed_at": item.get("observed_at"), "trace_id": item.get("trace_id", "")}
         self._items[evidence_id] = normalized
         return normalized
 
@@ -30,6 +32,11 @@ class EvidenceLedger:
 
     def has(self, query_id: str) -> bool:
         return bool(self.observed(query_id))
+
+    def contains(self, evidence_id: str, *, observed_only: bool = False) -> bool:
+        """Check an Evidence ID, distinct from ``has(query_id)``."""
+        item = self._items.get(evidence_id)
+        return item is not None and (not observed_only or item.get("status") == "observed")
 
     def missing(self, required_query_ids: Iterable[str]) -> List[str]:
         return [query_id for query_id in required_query_ids if not self.has(query_id)]

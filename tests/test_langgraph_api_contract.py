@@ -23,5 +23,6 @@ async def test_execute_route_maps_harness_message(monkeypatch):
 async def test_tools_route_exposes_all_catalog_capabilities():
     payload = await langgraph.list_tools()
     assert {item["name"] for item in payload["tools"]} == {
-        "ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24", "trace.paths"
+        "ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24", "ping.outliers",
+        "trace.paths", "trace.path_change"
     }

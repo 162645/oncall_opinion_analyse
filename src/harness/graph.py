@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 from langgraph.graph import END, START, StateGraph
 
 from src.runtime import CheckpointConfig, CheckpointerFactory
-from .nodes import context, executor, planner, synthesizer, understand, verifier
+from .nodes import _catalog_runtime, context, executor_with_runtime, planner, synthesizer, understand, verifier
 from .state import HarnessState, create_initial_state
 
 
@@ -28,6 +28,7 @@ class EvidenceDrivenHarness:
     CORE_NODES = ("understand", "context", "planner", "executor", "verifier", "synthesizer")
 
     def __init__(self, checkpointer=None):
+        self.runtime = _catalog_runtime()
         self.checkpointer = checkpointer or CheckpointerFactory.create(CheckpointConfig(
             backend=os.getenv("AGENT_CHECKPOINT_BACKEND", "memory"),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
@@ -37,7 +38,7 @@ class EvidenceDrivenHarness:
         self._ready = False
         workflow = StateGraph(HarnessState)
         for name, handler in (("understand", understand), ("context", context), ("planner", planner),
-                              ("executor", executor), ("verifier", verifier), ("synthesizer", synthesizer)):
+                              ("executor", executor_with_runtime(self.runtime)), ("verifier", verifier), ("synthesizer", synthesizer)):
             workflow.add_node(name, handler)
         workflow.add_edge(START, "understand")
         workflow.add_edge("understand", "context")

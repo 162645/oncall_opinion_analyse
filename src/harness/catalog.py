@@ -21,7 +21,9 @@ CATALOG: Dict[str, QuerySpec] = {
     "ping.trend": QuerySpec("ping.trend", "按小时的 RTT 趋势", "ping_trend.sql", "ping_trend", "trend_data", ("time_bucket", "sample_count", "valid_samples", "mean_rtt", "median_rtt", "p95_rtt")),
     "ping.by_asn": QuerySpec("ping.by_asn", "按 AS 的 RTT 对比", "ping_by_asn.sql", "ping_stats", "statistics", ("ip_asn", "total_samples", "valid_samples", "mean_rtt", "p95_rtt")),
     "ping.by_prefix24": QuerySpec("ping.by_prefix24", "按 /24 前缀的 RTT 对比", "ping_by_prefix24.sql", "ping_stats", "statistics", ("prefix24", "total_samples", "valid_samples", "mean_rtt", "p95_rtt")),
+    "ping.outliers": QuerySpec("ping.outliers", "异常 RTT 样本", "ping_outliers.sql", "ping_outliers", "outliers", ("measure_time", "rtt_ms", "ip_asn", "prefix24")),
     "trace.paths": QuerySpec("trace.paths", "Traceroute 路径稳定性", "trace_paths.sql", "trace_stats", "paths", ("ip_path_hash", "occurrence_count", "avg_hop_count", "reached_count")),
+    "trace.path_change": QuerySpec("trace.path_change", "按小时的路径变化", "trace_path_change.sql", "trace_path_change", "path_changes", ("time_bucket", "path_count", "sample_count")),
 }
 
 _REGION = re.compile(r"^[A-Z][A-Z0-9_]{1,31}$")

@@ -135,6 +135,8 @@ async def list_tools():
             {"name": "ping.trend", "description": "按小时 RTT 趋势"},
             {"name": "ping.by_asn", "description": "按 AS 的 RTT 对比"},
             {"name": "ping.by_prefix24", "description": "按 /24 前缀的 RTT 对比"},
+            {"name": "ping.outliers", "description": "异常 RTT 样本"},
             {"name": "trace.paths", "description": "Traceroute 路径稳定性"},
+            {"name": "trace.path_change", "description": "按小时的路径变化"},
         ],
     }
