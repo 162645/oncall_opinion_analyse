@@ -608,7 +608,11 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
             if concentrated:
                 facts.append({"fact": "asn_concentration", "claim": "P95 RTT 差异集中在少数 AS",
                               "value": asn_rows[:3], "evidence_ids": [ledger.observed("ping.by_asn")[0]["evidence_id"]]})
-            if ledger.has("ping.by_prefix24"):
+            # Path-level queries are semantic requirements, not a mandatory
+            # suffix of every ASN/prefix investigation. Requiring them for
+            # unrelated diagnosis cases caused needless calls and premature
+            # re-plans; only request them when the user asked about paths.
+            if ledger.has("ping.by_prefix24") and task.get("wants_path_analysis"):
                 if not ledger.has("trace.paths"):
                     missing.append({"query_id": "trace.paths", "reason": "confirm path-level evidence", "priority": "medium"})
                 if not ledger.has("trace.path_change"):
