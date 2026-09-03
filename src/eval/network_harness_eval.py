@@ -1,0 +1,70 @@
+"""Small deterministic evaluation set for interviewable Harness metrics.
+
+The evaluator scores planning and evidence discipline from completed Harness
+states. It does not pretend to measure production accuracy without labelled
+network data; callers can replace the five seed cases with replay fixtures.
+"""
+
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List
+
+
+@dataclass(frozen=True)
+class NetworkEvalCase:
+    case_id: str
+    query: str
+    expected_queries: tuple[str, ...]
+    expected_verdict: str
+    expected_cross_status: str | None = None
+
+
+DEFAULT_CASES = (
+    NetworkEvalCase("E01", "UKRAINE P95 RTT 是否异常", ("ping.summary", "ping.trend"), "PASS"),
+    NetworkEvalCase("E02", "UKRAINE 延迟异常并定位 AS", ("ping.by_asn",), "PARTIAL"),
+    NetworkEvalCase("E03", "UKRAINE ASN 集中后继续定位 Prefix", ("ping.by_prefix24",), "PARTIAL"),
+    NetworkEvalCase("E04", "路径变化与 RTT 时间重合", ("trace.path_change",), "PASS", "correlated"),
+    NetworkEvalCase("E05", "ClickHouse 不可用时分析延迟", (), "ABSTAIN"),
+)
+
+
+def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
+    task = state.get("task", {})
+    plan_queries = {step.get("query_id") for step in state.get("plan", {}).get("steps", [])}
+    evidence = state.get("execution", {}).get("evidence", [])
+    evidence_queries = {item.get("query_id") for item in evidence if item.get("status") == "observed"}
+    verification = state.get("verification", {})
+    expected = set(case.expected_queries)
+    selected = bool(expected <= (plan_queries | evidence_queries)) if expected else not evidence_queries
+    claim_ids = {item.get("evidence_id") for item in evidence if item.get("status") == "observed"}
+    claims = state.get("answer", {}).get("claims", [])
+    grounded = all(set(claim.get("evidence_ids", [])) <= claim_ids for claim in claims)
+    cross_status = verification.get("checks", {}).get("cross_evidence", {}).get("status")
+    return {
+        "case_id": case.case_id,
+        "task_spec_accuracy": task.get("kind") == "network_analysis",
+        "query_selection_accuracy": selected,
+        "evidence_coverage": len(expected & evidence_queries) / len(expected) if expected else float(not evidence_queries),
+        "unsupported_claim_rate": 0.0 if grounded else 1.0,
+        "correct_abstain": verification.get("verdict") == case.expected_verdict,
+        "cross_status_match": case.expected_cross_status is None or cross_status == case.expected_cross_status,
+        "rounds": state.get("round", 0),
+        "query_count": len(evidence),
+    }
+
+
+def evaluate_cases(results: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    rows = list(results)
+    if not rows:
+        return {"cases": 0}
+    average = lambda key: sum(float(row[key]) for row in rows) / len(rows)
+    return {
+        "cases": len(rows),
+        "task_spec_accuracy": average("task_spec_accuracy"),
+        "plan_accuracy": average("query_selection_accuracy"),
+        "evidence_coverage": average("evidence_coverage"),
+        "unsupported_claim_rate": average("unsupported_claim_rate"),
+        "correct_abstain_rate": average("correct_abstain"),
+        "cross_evidence_accuracy": average("cross_status_match"),
+        "average_rounds": average("rounds"),
+        "average_query_count": average("query_count"),
+    }

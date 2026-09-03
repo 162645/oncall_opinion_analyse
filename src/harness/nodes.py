@@ -25,17 +25,15 @@ def _catalog_runtime() -> ToolRuntime:
                 raise ValueError(f"query_type mismatch for {_query_id}")
             sql, bindings = compile_sql(_query_id, arguments)
             rows = get_clickhouse_client().execute(sql, bindings)
-            return {spec_for(_query_id).result_key: [dict(zip(spec_for(_query_id).columns, row)) for row in rows]}
+            query_spec = spec_for(_query_id)
+            typed_rows = [query_spec.output_model.model_validate(dict(zip(query_spec.columns, row))).model_dump(mode="json")
+                          for row in rows]
+            return {query_spec.result_key: typed_rows}
 
         runtime.register(ToolDefinition(
             name=query_id,
             description=spec.description,
-            parameters={"type": "object", "properties": {
-                "query_type": {"type": "string"}, "region": {"type": "string"},
-                "start_time": {"type": "string"}, "end_time": {"type": "string"},
-                "interval": {"type": "string"}, "group_by": {"type": "array"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000}},
-                "required": ["query_type", "region", "start_time", "end_time"]},
+            parameters=spec.input_model.model_json_schema(),
             handler=handler, permission=PermissionLevel.READ,
             timeout_seconds=float(os.getenv("AGENT_TOOL_TIMEOUT_SECONDS", "8")),
         ))
@@ -133,8 +131,12 @@ async def understand(state: Dict[str, Any]) -> Dict[str, Any]:
 async def context(state: Dict[str, Any]) -> Dict[str, Any]:
     started = time.perf_counter()
     task = state.get("task", {})
+    recipe = "network_diagnosis_v1" if task.get("kind") == "network_analysis" else "knowledge_answer_v1"
     context_data = {"catalog": list(catalog_description()),
-                    "recipe": "network_diagnosis_v1" if task.get("kind") == "network_analysis" else "knowledge_answer_v1",
+                    "recipe": recipe,
+                    "recipe_hints": {"name": recipe, "stages": ["summary", "trend", "asn", "prefix24", "trace"]
+                                     if task.get("kind") == "network_analysis" else ["retrieve", "cite"]},
+                    "semantic_hints": ["measurement evidence is authoritative", "context evidence is non-causal background"],
                     "knowledge": [], "graph_context": [], "skill_matches": [], "data_source": "ClickHouse"}
     # Network investigations also receive semantic context. Retrieval is an
     # input to planning, never a substitute for measured evidence.
@@ -183,7 +185,7 @@ def _steps(task: Dict[str, Any], execution: Dict[str, Any], verification: Dict[s
     tr = task["time_range"]
     ledger = EvidenceLedger(execution.get("evidence", []))
     failed = {item.get("query_id") for item in execution.get("evidence", []) if item.get("status") != "observed"}
-    base = {"region": region, **tr}
+    base = {"region": region, "start_time": tr["start_time"], "end_time": tr["end_time"]}
     missing_evidence = (verification or {}).get("missing_evidence", [])
     if missing_evidence:
         requested = [item.get("query_id") if isinstance(item, dict) else item for item in missing_evidence]
@@ -261,6 +263,10 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             "每项必须是 {query_id, params, purpose}，query_id 只能来自 Catalog；禁止 SQL、禁止新增工具。"
             f"\nTaskSpec={json.dumps(task, ensure_ascii=False, default=str)}"
             f"\nCatalog={json.dumps(context.get('catalog', []), ensure_ascii=False)}"
+            f"\nRecipeHints={json.dumps(context.get('recipe_hints', {}), ensure_ascii=False)}"
+            f"\nSkillMatches={json.dumps(context.get('skill_matches', [])[:2], ensure_ascii=False, default=str)}"
+            f"\nKnowledgeHints={json.dumps(context.get('knowledge', [])[:3], ensure_ascii=False, default=str)[:4000]}"
+            f"\nGraphHints={json.dumps(context.get('graph_context', [])[:3], ensure_ascii=False, default=str)}"
             f"\nEvidence={json.dumps(evidence, ensure_ascii=False, default=str)[:8000]}"
             "\n请选择当前最有价值且尚未成功执行的查询。"
         )
@@ -345,7 +351,7 @@ async def _execute_with_runtime(state: Dict[str, Any], runtime: ToolRuntime) -> 
                     "duration_ms": int((time.perf_counter() - begin) * 1000)}
         results.append(item)
         evidence.append({"evidence_id": f"E{len(evidence) + 1}", "query_id": query_id, "status": "observed" if item["success"] else "unavailable",
-                         "data": item["data"], "error": item["error"], "source": "clickhouse",
+                         "kind": "measurement", "data": item["data"], "error": item["error"], "source": "clickhouse",
                          "params": params, "observed_at": datetime.now(timezone.utc).isoformat(),
                          "trace_id": state.get("run_id", "")})
     execution = {"results": results, "evidence": evidence}
@@ -470,10 +476,10 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
     task, verification = state.get("task", {}), state.get("verification", {})
     ledger = EvidenceLedger(state.get("execution", {}).get("evidence", []))
     for item in state.get("context", {}).get("knowledge", []):
-        ledger.add({"evidence_id": item["evidence_id"], "query_id": "knowledge.search", "status": "observed",
+        ledger.add({"evidence_id": item["evidence_id"], "kind": "context", "query_id": "knowledge.search", "status": "observed",
                     "data": {"content": item["content"], "score": item["score"]}, "quality": "retrieved"})
     for index, item in enumerate(state.get("context", {}).get("graph_context", []), start=1):
-        ledger.add({"evidence_id": f"G{index}", "query_id": "knowledge.graph", "status": "observed",
+        ledger.add({"evidence_id": f"G{index}", "kind": "context", "query_id": "knowledge.graph", "status": "observed",
                     "data": item, "quality": "graph_retrieved"})
     evidence = ledger.all()
     if task.get("kind") != "network_analysis":
@@ -488,21 +494,6 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
         answer = f"已完成 {task.get('region')} 的网络测量分析。证据状态为 {verification.get('verdict')}，有效证据 {verification.get('successful_evidence')}/{verification.get('total_evidence')}。"
         if verification.get("verdict") != "PASS":
             answer += " 部分查询失败，因此不对缺失数据做推断。"
-    generated_by = "deterministic_synthesizer"
-    if (os.getenv("HARNESS_LLM_ENABLED", "false").lower() == "true"
-            and verification.get("verdict") in {"PASS", "PARTIAL"} and evidence):
-        try:
-            from src.llm import get_llm_gateway
-            prompt = ("你是网络测量分析助手。只能使用给定 evidence，不能补造数据；每个事实后标注 evidence_id。"
-                      "如果证据不支持结论，明确说不知道。\nEvidence:\n" + json.dumps(evidence, ensure_ascii=False, default=str)[:12000]
-                      + "\n请用简洁中文回答用户问题：" + state["query"])
-            llm_result = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=10.0)
-            if llm_result.content.strip():
-                answer, generated_by = llm_result.content.strip(), "llm_synthesizer"
-        except Exception:
-            # LLM is an enhancement, never a dependency of the evidence path.
-            pass
-    charts = _chart_specs(evidence)
     all_evidence = ledger.all()
     evidence_id_set = {item["evidence_id"] for item in all_evidence}
     claims = []
@@ -513,7 +504,30 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
             bound["claim"] = fact.get("claim", fact.get("fact", ""))
             bound["fact"] = fact.get("fact")
             claims.append(bound)
+    generated_by = "deterministic_synthesizer"
+    if (os.getenv("HARNESS_LLM_ENABLED", "false").lower() == "true"
+            and verification.get("verdict") in {"PASS", "PARTIAL"} and claims):
+        try:
+            from src.llm import get_llm_gateway
+            prompt = ("你是已验证 Claim 的中文渲染器。只能改写给定 claim，不能增加、删除或合并 claim，"
+                      "禁止引入新的数字、对象、因果关系或根因判断。只输出 JSON 数组："
+                      "[{\"claim_id\":\"CL1\",\"text\":\"...\"}]。"
+                      f"\nVerifiedClaims={json.dumps(claims, ensure_ascii=False, default=str)}"
+                      f"\n用户问题：{state['query']}")
+            llm_result = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=10.0)
+            rendered = _extract_json_object(llm_result.content)
+            allowed = {claim["claim_id"] for claim in claims}
+            if isinstance(rendered, list) and {item.get("claim_id") for item in rendered} == allowed \
+                    and all(isinstance(item.get("text"), str) and item["text"].strip() for item in rendered):
+                by_id = {item["claim_id"]: item["text"].strip() for item in rendered}
+                answer = "\n".join(f"[{claim['claim_id']}] {by_id[claim['claim_id']]}" for claim in claims)
+                generated_by = "llm_claim_renderer"
+        except Exception:
+            # LLM is an enhancement, never a dependency of the evidence path.
+            pass
+    charts = _chart_specs(evidence)
     answer_data = {"answer": answer, "charts": charts, "evidence": all_evidence,
+                   "measurement_evidence": ledger.measurement(), "context_evidence": ledger.context(),
                    "generated_by": generated_by,
                    "claims": claims,
                    "verdict": verification.get("verdict")}

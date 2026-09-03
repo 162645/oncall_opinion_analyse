@@ -18,6 +18,7 @@ from .metrics import (
 # RAGAS 评估组件
 from .ragas_evaluator import RAGEvaluator, RAGEvaluationResult, get_rag_evaluator
 from .report import EvaluationReport, generate_report, generate_markdown_report
+from .network_harness_eval import DEFAULT_CASES, NetworkEvalCase, evaluate_cases, score_case
 
 __all__ = [
     # 诊断评估
@@ -37,6 +38,10 @@ __all__ = [
     "EvaluationReport",
     "generate_report",
     "generate_markdown_report",
+    "NetworkEvalCase",
+    "DEFAULT_CASES",
+    "score_case",
+    "evaluate_cases",
 ]
 from .harness_metrics import AgentEvaluationRecord, HarnessEvaluator
 

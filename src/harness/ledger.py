@@ -15,7 +15,10 @@ class EvidenceLedger:
         evidence_id = str(item.get("evidence_id", "")).strip()
         if not evidence_id:
             raise ValueError("evidence_id is required")
-        normalized = {"evidence_id": evidence_id, "query_id": item.get("query_id", "unknown"),
+        kind = item.get("kind", "measurement" if evidence_id.startswith("E") else "context")
+        if kind not in {"measurement", "context"}:
+            raise ValueError("kind must be measurement or context")
+        normalized = {"evidence_id": evidence_id, "kind": kind, "query_id": item.get("query_id", "unknown"),
                       "status": item.get("status", "unavailable"), "data": item.get("data"),
                       "error": item.get("error"), "quality": item.get("quality", "unknown"),
                       "source": item.get("source", "unknown"), "params": dict(item.get("params") or {}),
@@ -29,6 +32,12 @@ class EvidenceLedger:
     def observed(self, query_id: str | None = None) -> List[Dict[str, Any]]:
         return [item for item in self._items.values()
                 if item.get("status") == "observed" and (query_id is None or item.get("query_id") == query_id)]
+
+    def measurement(self) -> List[Dict[str, Any]]:
+        return [item for item in self.observed() if item.get("kind") == "measurement"]
+
+    def context(self) -> List[Dict[str, Any]]:
+        return [item for item in self.observed() if item.get("kind") == "context"]
 
     def has(self, query_id: str) -> bool:
         return bool(self.observed(query_id))
@@ -45,4 +54,6 @@ class EvidenceLedger:
         ids = list(evidence_ids)
         if not ids or any(evidence_id not in self._items for evidence_id in ids):
             raise ValueError(f"claim {claim_id} must reference existing evidence")
+        if any(self._items[evidence_id].get("kind") != "measurement" for evidence_id in ids):
+            raise ValueError(f"claim {claim_id} must reference measurement evidence")
         return {"claim_id": claim_id, "evidence_ids": ids}
