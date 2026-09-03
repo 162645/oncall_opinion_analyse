@@ -17,4 +17,19 @@ jobs:
       - name: Install harness dependencies
         run: pip install -r requirements-harness.txt
       - name: Run contract and integration tests
-        run: pytest -q
+        # The root suite is the maintained Harness contract. The historical
+        # tests/grpc_test suite has its own generated-proto/runtime profile.
+        run: >-
+          pytest -q
+          tests/test_chat_evidence_contract.py
+          tests/test_evidence_harness_contract.py
+          tests/test_full_chain.py
+          tests/test_harness_evaluation.py
+          tests/test_harness_graph.py
+          tests/test_harness_runtime.py
+          tests/test_langgraph_api_contract.py
+          tests/test_mcp.py
+          tests/test_mcp_catalog_adapter.py
+          tests/test_network_harness_eval.py
+          tests/test_redis_checkpoint.py
+          tests/test_single_execution_authority.py
