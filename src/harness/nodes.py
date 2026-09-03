@@ -161,7 +161,10 @@ async def _llm_task_spec(state: Dict[str, Any], draft: Dict[str, Any]) -> Dict[s
         prompt = (
             "将用户问题转换成严格 JSON，不要 Markdown。只允许字段：kind(network_analysis/knowledge), "
             "goal(describe/diagnose), region(大写地区标识或空字符串), metric(rtt/p95/p99), "
-            "planning_mode(recipe/long_tail), time_range(start_time,end_time)。"
+            "planning_mode(recipe/long_tail), time_range(start_time,end_time), "
+            "analysis_dimensions(只能是time/asn/prefix/path/region/operator数组), "
+            "comparison(对象), constraints(字符串数组), semantic_requirements(字符串数组), "
+            "semantic_confidence(0到1)。"
             "不要生成 SQL，不要添加字段。若无法确定则保留规则草稿字段。"
             f"\n用户问题：{state['query']}\n规则草稿：{json.dumps(draft, ensure_ascii=False)}"
         )
@@ -183,11 +186,20 @@ async def _llm_task_spec(state: Dict[str, Any], draft: Dict[str, Any]) -> Dict[s
         time_range = candidate.get("time_range") or {}
         if not time_range.get("start_time") or not time_range.get("end_time"):
             return None
+        dimensions = [item for item in (candidate.get("analysis_dimensions") or [])
+                      if item in {"time", "asn", "prefix", "path", "region", "operator"}]
         return {"kind": kind, "goal": candidate.get("goal") if candidate.get("goal") in {"describe", "diagnose"} else draft["goal"],
                 "region": region, "time_range": {"start_time": str(time_range["start_time"]),
                 "end_time": str(time_range["end_time"]), "hours": draft["time_range"].get("hours", 24)},
                 "metric": candidate.get("metric") if candidate.get("metric") in {"rtt", "p95", "p99"} else draft["metric"],
-                "planning_mode": candidate.get("planning_mode") if candidate.get("planning_mode") in {"recipe", "long_tail"} else draft.get("planning_mode", "recipe")}
+                "planning_mode": candidate.get("planning_mode") if candidate.get("planning_mode") in {"recipe", "long_tail"} else draft.get("planning_mode", "recipe"),
+                "needs_baseline": bool(candidate.get("needs_baseline", draft.get("needs_baseline", False))),
+                "wants_path_analysis": bool(candidate.get("wants_path_analysis", draft.get("wants_path_analysis", False))),
+                "analysis_dimensions": dimensions or draft.get("analysis_dimensions", []),
+                "comparison": candidate.get("comparison") if isinstance(candidate.get("comparison"), dict) else draft.get("comparison", {}),
+                "constraints": [str(x)[:160] for x in (candidate.get("constraints") or draft.get("constraints", [])) if str(x).strip()][:8],
+                "semantic_requirements": [str(x)[:160] for x in (candidate.get("semantic_requirements") or draft.get("semantic_requirements", [])) if str(x).strip()][:8],
+                "semantic_confidence": max(0.0, min(1.0, float(candidate.get("semantic_confidence", draft.get("semantic_confidence", 0.6))))) }
     except Exception:
         return None
 
@@ -204,8 +216,24 @@ async def understand(state: Dict[str, Any]) -> Dict[str, Any]:
             "planning_mode": "long_tail" if complexity_signals >= 2 else "recipe",
             "needs_baseline": any(word in query.lower() for word in ("变差", "恶化", "相比", "之前", "历史", "baseline", "compare")),
             "wants_path_analysis": any(word in query.lower() for word in ("路径", "路由", "traceroute", "trace", "path"))}
-    low_confidence = not task["region"] or (task["kind"] == "network_analysis" and complexity_signals >= 2)
-    if low_confidence and os.getenv("HARNESS_UNDERSTAND_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true":
+    task["analysis_dimensions"] = (["time"] if any(w in query.lower() for w in ("趋势", "时间", "白天", "凌晨", "hour", "trend")) else [])
+    if any(w in query.lower() for w in ("asn", "运营商")):
+        task["analysis_dimensions"].append("asn")
+    if any(w in query.lower() for w in ("前缀", "prefix")):
+        task["analysis_dimensions"].append("prefix")
+    if task["wants_path_analysis"]:
+        task["analysis_dimensions"].append("path")
+    task["semantic_requirements"] = []
+    if any(w in query.lower() for w in ("白天", "凌晨", "day", "night")):
+        task["semantic_requirements"].append("compare_day_night")
+    if task["wants_path_analysis"]:
+        task["semantic_requirements"].append("explain_path_change_without_claiming_causality")
+    task["semantic_confidence"] = 0.65 if task["region"] else 0.35
+    # LLM is the semantic interpreter for non-trivial requests; the rule draft
+    # remains the fallback and Pydantic is the final boundary.
+    llm_enabled = os.getenv("HARNESS_UNDERSTAND_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true"
+    low_confidence = not task["region"] or complexity_signals >= 1 or len(task["analysis_dimensions"]) >= 2
+    if low_confidence and llm_enabled:
         enriched = await _llm_task_spec(state, task)
         if enriched:
             task = enriched
@@ -338,19 +366,33 @@ def _extract_json_object(content: str) -> Any:
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        start, end = content.find("["), content.rfind("]")
-        if start < 0 or end <= start:
-            return None
-        try:
-            return json.loads(content[start:end + 1])
-        except json.JSONDecodeError:
-            return None
+        decoder = json.JSONDecoder()
+        for start in (content.find("{"), content.find("[")):
+            if start < 0:
+                continue
+            try:
+                value, _ = decoder.raw_decode(content[start:])
+                return value
+            except json.JSONDecodeError:
+                continue
+        return None
 
 
 def _renderer_grounded(source: str, rendered: str) -> bool:
     """Preserve every numeric/entity token from a verified claim at runtime."""
     tokens = re.findall(r"\d+(?:\.\d+)?|AS\d+|\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}|[A-Z]{2,}", source)
     return all(token in rendered for token in tokens)
+
+
+def _factual_tokens(text: str) -> set[str]:
+    return set(re.findall(r"\d+(?:\.\d+)?|AS\d+|\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}|[A-Z]{2,}", text))
+
+
+def _renderer_bidirectionally_grounded(claims: List[Dict[str, Any]], rendered: str) -> bool:
+    """Require source facts to survive and reject new numeric/entity facts."""
+    source_tokens = set().union(*(_factual_tokens(str(item.get("claim", ""))) for item in claims))
+    rendered_tokens = _factual_tokens(rendered)
+    return source_tokens.issubset(rendered_tokens) and rendered_tokens.issubset(source_tokens)
 
 
 async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -370,6 +412,7 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             f"\nKnowledgeHints={json.dumps(context.get('knowledge', [])[:3], ensure_ascii=False, default=str)[:4000]}"
             f"\nGraphHints={json.dumps(context.get('graph_context', [])[:3], ensure_ascii=False, default=str)}"
             f"\nEvidence={json.dumps(evidence, ensure_ascii=False, default=str)[:8000]}"
+            f"\nRecipeCandidate={json.dumps(_steps(task, state.get('execution', {}), state.get('verification', {})), ensure_ascii=False, default=str)}"
             "\n请选择当前最有价值且尚未成功执行的查询。"
         )
         from src.llm import LLMConfig
@@ -405,6 +448,38 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []
 
 
+async def _llm_semantic_critic(state: Dict[str, Any], facts: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """Check semantic completeness only; it cannot create facts or evidence."""
+    if os.getenv("HARNESS_VERIFIER_LLM_ENABLED", "false").lower() != "true":
+        return None
+    try:
+        from src.llm import get_llm_gateway, LLMConfig
+        prompt = (
+            "你是网络分析证据完整性 Critic。只输出 JSON 对象，格式为 "
+            '{"missing_requirements":["..."],"coverage":"complete|partial","confidence":0.0}。'
+            "只判断用户问题中的语义要求是否被已有测量证据覆盖；不要创造事实、数字、Evidence ID，"
+            "不要判断网络因果，不要提出 Catalog 之外的查询。"
+            f"\n用户问题={state.get('query', '')}"
+            f"\nTaskSpec={json.dumps(state.get('task', {}), ensure_ascii=False, default=str)}"
+            f"\nVerifiedFacts={json.dumps(facts, ensure_ascii=False, default=str)[:6000]}"
+            f"\nMeasurementEvidence={json.dumps(state.get('execution', {}).get('evidence', []), ensure_ascii=False, default=str)[:6000]}"
+        )
+        try:
+            response = await asyncio.wait_for(get_llm_gateway().generate(prompt, config=LLMConfig(
+                temperature=0, max_tokens=512)), timeout=5.0)
+        except TypeError:
+            response = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=5.0)
+        value = _extract_json_object(response.content)
+        if not isinstance(value, dict):
+            return None
+        missing = [str(item)[:120] for item in (value.get("missing_requirements") or []) if str(item).strip()][:8]
+        coverage = value.get("coverage") if value.get("coverage") in {"complete", "partial"} else "complete"
+        return {"missing_requirements": missing, "coverage": coverage,
+                "confidence": max(0.0, min(1.0, float(value.get("confidence", 0.0))))}
+    except Exception:
+        return None
+
+
 async def planner(state: Dict[str, Any]) -> Dict[str, Any]:
     started = time.perf_counter()
     task = state.get("task", {})
@@ -414,11 +489,13 @@ async def planner(state: Dict[str, Any]) -> Dict[str, Any]:
     # Long-tail planning is optional and guarded: the model may choose only
     # catalog primitives. If it fails validation or is unavailable, the
     # deterministic recipe remains the safe fallback.
-    if not verification.get("missing_evidence") and (task.get("planning_mode") == "long_tail" or os.getenv("HARNESS_PLANNER_MODE", "hybrid") == "llm") \
+    planner_refinement = os.getenv("HARNESS_PLANNER_REFINEMENT", "false").lower() == "true"
+    if not verification.get("missing_evidence") and (planner_refinement or task.get("planning_mode") == "long_tail" or os.getenv("HARNESS_PLANNER_MODE", "hybrid") == "llm") \
             and os.getenv("HARNESS_PLANNER_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true":
         llm_steps = await _llm_plan(state)
         if llm_steps:
-            steps, source, rationale = llm_steps, "llm_guarded", "长尾问题由 LLM 选择 Query Primitive，经过 Plan Guard 校验"
+            source = "llm_refined" if planner_refinement else "llm_guarded"
+            steps, rationale = llm_steps, "LLM 基于语义 TaskSpec、Recipe、Context 与已有证据重排查询，经过 Plan Guard 校验"
     budget = state.get("budget", {})
     used_queries = len(state.get("execution", {}).get("evidence", []))
     remaining_queries = max(0, int(budget.get("max_queries", 8)) - used_queries)
@@ -590,6 +667,9 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
                         "traceroute_paths_observed", "rtt_path_time_correlation"}
     if task.get("goal") == "diagnose" and not (set(fact.get("fact") for fact in facts) & diagnostic_facts):
         coverage_issues.append("诊断尚未得到可定位异常或根因方向的事实")
+    semantic_critic = await _llm_semantic_critic(state, facts)
+    if semantic_critic and semantic_critic.get("coverage") == "partial":
+        coverage_issues.extend(f"语义要求未覆盖: {item}" for item in semantic_critic["missing_requirements"])
     if not successful:
         verdict, score = ("PASS", 0.55) if task.get("kind") == "knowledge" else ("ABSTAIN", 0.0)
     elif missing or coverage_issues:
@@ -604,7 +684,8 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
                                "consistency": {"ok": not consistency_issues, "issues": consistency_issues},
                                "freshness": {"ok": not freshness_issues, "issues": freshness_issues},
                                "claimability": {"ok": not claimability_issues, "issues": claimability_issues},
-                               "cross_evidence": cross_evidence},
+                               "cross_evidence": cross_evidence,
+                               "semantic_critic": semantic_critic or {"status": "disabled"}},
                     reason="证据足够" if verdict == "PASS" else "仍缺少证明当前结论所需的证据，回答将明确标注限制"))
     next_node = "synthesizer"
     return {"verification": verification, "next_node": next_node, "trace": state.get("trace", []) + [_event(state, "verifier", started, reasoning=f"证据校验结果: {verdict}") ]}
@@ -652,20 +733,28 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
             and verification.get("verdict") in {"PASS", "PARTIAL"} and claims):
         try:
             from src.llm import get_llm_gateway
-            prompt = ("你是已验证 Claim 的中文渲染器。只能改写给定 claim，不能增加、删除或合并 claim，"
-                      "禁止引入新的数字、对象、因果关系或根因判断。只输出 JSON 数组："
-                      "[{\"claim_id\":\"CL1\",\"text\":\"...\"}]。"
+            prompt = ("你是已验证 Claim 的中文叙事渲染器。可以调整顺序、加入过渡句和结论边界，"
+                      "但不能增加事实 Claim、数字、对象、因果关系或根因判断。只能输出 JSON 对象："
+                      "{\"summary\":\"自然中文总结\",\"claims\":[{\"claim_id\":\"CL1\",\"text\":\"...\"}]}。"
+                      "summary 中只能使用 VerifiedClaims 的事实；必须保留所有 claim_id。"
                       f"\nVerifiedClaims={json.dumps(claims, ensure_ascii=False, default=str)}"
                       f"\n用户问题：{state['query']}")
             llm_result = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=10.0)
             rendered = _extract_json_object(llm_result.content)
+            if isinstance(rendered, list):
+                rendered = {"summary": "", "claims": rendered}
+            rendered_claims = rendered.get("claims") if isinstance(rendered, dict) else None
+            summary = rendered.get("summary", "") if isinstance(rendered, dict) else ""
             allowed = {claim["claim_id"] for claim in claims}
-            if (isinstance(rendered, list) and {item.get("claim_id") for item in rendered} == allowed
-                    and all(isinstance(item.get("text"), str) and item["text"].strip() for item in rendered)
+            if (isinstance(rendered_claims, list) and isinstance(summary, str)
+                    and {item.get("claim_id") for item in rendered_claims} == allowed
+                    and all(isinstance(item.get("text"), str) and item["text"].strip() for item in rendered_claims)
                     and all(_renderer_grounded(next(claim["claim"] for claim in claims if claim["claim_id"] == item["claim_id"]), item["text"])
-                            for item in rendered)):
-                by_id = {item["claim_id"]: item["text"].strip() for item in rendered}
-                answer = "\n".join(f"[{claim['claim_id']}] {by_id[claim['claim_id']]}" for claim in claims)
+                            for item in rendered_claims)
+                    and _renderer_bidirectionally_grounded(claims, summary + " " + " ".join(item["text"] for item in rendered_claims))):
+                by_id = {item["claim_id"]: item["text"].strip() for item in rendered_claims}
+                answer = (summary.strip() + "\n\n" if summary.strip() else "") + "\n".join(
+                    f"[{claim['claim_id']}] {by_id[claim['claim_id']]}" for claim in claims)
                 generated_by = "llm_claim_renderer"
         except Exception:
             # LLM is an enhancement, never a dependency of the evidence path.

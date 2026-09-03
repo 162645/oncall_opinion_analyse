@@ -96,9 +96,12 @@ def main() -> None:
               f"| Cases | {summary['free_react']['cases']} | {summary['harness']['cases']} |",
               f"| Unsupported claim rate | {summary['free_react']['unsupported_claim_rate']:.2%} | {summary['harness']['unsupported_claim_rate']:.2%} |",
               f"| Key evidence coverage | {summary['free_react']['evidence_coverage']:.2%} | {summary['harness']['evidence_coverage']:.2%} |",
-              f"| Correct abstain rate | {summary['free_react']['correct_abstain_rate']:.2%} | {summary['harness']['correct_abstain_rate']:.2%} |",
+              f"| Verdict accuracy | {summary['free_react']['correct_abstain_rate']:.2%} | {summary['harness']['correct_abstain_rate']:.2%} |",
+              f"| Claim presence rate | {summary['free_react']['claim_presence_rate']:.2%} | {summary['harness']['claim_presence_rate']:.2%} |",
+              f"| Claim recall | {summary['free_react']['claim_recall']:.2%} | {summary['harness']['claim_recall']:.2%} |",
               f"| Average tool calls | {summary['free_react']['average_tool_calls']:.2f} | {summary['harness']['average_tool_calls']:.2f} |",
-              "", "Raw per-case results are stored in `agent_comparison.json`."]
+              "", "The baseline is a DeepSeek LLM ReAct policy; Harness uses the same DeepSeek gateway with guarded planning and evidence verification.",
+              "Raw per-case results are stored in the JSON report."]
         args.output.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print(rendered)
 

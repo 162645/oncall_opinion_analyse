@@ -26,6 +26,11 @@ class TaskSpec(HarnessModel):
     needs_baseline: bool = False
     wants_path_analysis: bool = False
     time_range: TimeRange
+    analysis_dimensions: List[Literal["time", "asn", "prefix", "path", "region", "operator"]] = Field(default_factory=list)
+    comparison: Dict[str, Any] = Field(default_factory=dict)
+    constraints: List[str] = Field(default_factory=list)
+    semantic_requirements: List[str] = Field(default_factory=list)
+    semantic_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class PlanStep(HarnessModel):
@@ -38,7 +43,7 @@ class AnalysisPlan(HarnessModel):
     plan_id: str
     round: int
     steps: List[PlanStep] = Field(default_factory=list)
-    source: Literal["recipe", "llm_guarded"] = "recipe"
+    source: Literal["recipe", "llm_guarded", "llm_refined"] = "recipe"
     rationale: str = ""
 
 
