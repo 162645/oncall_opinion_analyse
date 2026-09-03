@@ -1,5 +1,10 @@
 """Small dependency-stable CI gate for the maintained Evidence Harness."""
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from src.eval.network_harness_eval import DEFAULT_CASES, evaluate_cases, score_case
 from src.harness.catalog import CATALOG, compile_sql
 from src.harness.ledger import EvidenceLedger
@@ -17,3 +22,8 @@ def test_ci_smoke_covers_catalog_ledger_and_eval():
     assert ledger.contains("E1", observed_only=True) and len(CATALOG) >= 8
     row = score_case(DEFAULT_CASES[0], {"task": {}, "plan": {}, "execution": {}, "verification": {}, "answer": {}})
     assert evaluate_cases([row])["cases"] == 1
+
+
+if __name__ == "__main__":
+    test_ci_smoke_covers_catalog_ledger_and_eval()
+    print("Harness CI smoke gate passed")
