@@ -92,7 +92,7 @@ async def test_full_four_round_drilldown_with_fake_clickhouse(monkeypatch):
 
     monkeypatch.setattr("src.harness.nodes.get_clickhouse_client", lambda: FakeClient())
     result = await EvidenceDrivenHarness().execute(
-        "分析 UKRAINE 最近 24 小时延迟异常原因", session_id="fake-four-round"
+        "分析 UKRAINE 最近 24 小时延迟异常原因，并检查路径变化", session_id="fake-four-round"
     )
     assert result.success is True
     assert result.state["round"] == 4
