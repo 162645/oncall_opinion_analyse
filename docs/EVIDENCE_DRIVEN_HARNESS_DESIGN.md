@@ -677,32 +677,19 @@ React
 
 前端根据 `ChartSpec` 使用 ECharts/AntV 渲染，后端不再维护 `VisualizationAgent`。
 
-## 14. 目标代码结构
+## 14. 当前代码结构
 
 ```text
 src/
 ├── harness/
-│   ├── graph.py
-│   ├── state.py
-│   ├── models.py
-│   └── nodes/
-│       ├── understand.py
-│       ├── context.py
-│       ├── planner.py
-│       ├── executor.py
-│       ├── verifier.py
-│       └── synthesizer.py
-├── query_catalog/
-│   ├── registry.py
-│   ├── models.py
-│   ├── compiler.py
-│   ├── governor.py
-│   └── sql/
-├── capabilities/
-│   ├── ping.py
-│   ├── traceroute.py
-│   ├── knowledge.py
-│   └── metadata.py
+│   ├── graph.py              # 唯一 LangGraph 执行图
+│   ├── state.py              # 可 checkpoint 的状态
+│   ├── models.py             # 节点边界契约
+│   ├── ledger.py             # EvidenceLedger
+│   ├── catalog.py            # QuerySpec + 安全 SQL 编译器
+│   ├── mcp_adapter.py        # Catalog → MCP-shaped tools
+│   ├── nodes.py              # 六个核心节点
+│   └── sql/                  # 版本化预定义 SQL
 ├── runtime/
 │   ├── tool_runtime.py
 │   ├── checkpoint.py
@@ -712,8 +699,7 @@ src/
 │   ├── registry.py
 │   ├── lifecycle.py
 │   └── recipes/
-├── mcp/
-│   └── adapter.py
+├── mcp/                      # 通用 MCP 协议客户端
 ├── knowledge/
 ├── eval/
 └── api/
@@ -721,35 +707,34 @@ src/
 
 ## 15. 重构顺序
 
-### Phase 1：建立新状态和六节点
+### 已完成：建立新状态和六节点
 
 - 新建 `HarnessState`、`TaskSpec`、`AnalysisPlan`、`Evidence` 和 `Verification`。
 - 让 `/api/chat/send` 进入新 Harness。
-- 暂时保留旧 AgentService 作为兼容门面，但不再拥有流程控制权。
+- `AgentService` 已收敛为兼容门面，不再包含 Router/Orchestrator/ReAct 执行逻辑。
 
-### Phase 2：Query Catalog
+### 已完成：Query Catalog
 
-- 从现有 ClickHouse Analyzer 提取首批 Ping/Traceroute QuerySpec。
-- 每个 Query 配套 SQL 模板、输入输出模型和固定数据测试。
-- 增加 Dataset Registry、Query Compiler 和 Query Governor。
+- 首批 Ping/Traceroute `QuerySpec`、SQL 模板、输入校验、结果字段映射和契约测试已完成。
+- Query Compiler 只允许安全的表名标识符替换；值均使用 ClickHouse 参数绑定。
+- ToolRuntime 提供超时、重试、熔断、权限、输出大小和审计边界。
 
-### Phase 3：Verifier Loop
+### 已完成：Verifier Loop
 
-- 用确定性规则实现目标覆盖、样本量、数值一致性和证据引用检查。
-- 实现 1～3 轮 Progressive Drill-down。
-- 用 Evidence Quality 替代固定 `confidence=0.85`。
+- `EvidenceLedger` 统一承载观测证据和 Claim 绑定，Verifier 以证据覆盖决定 `PASS/PARTIAL/ABSTAIN`。
+- 已实现 1～3 轮 Ping → ASN → Prefix24 → Traceroute 的证据驱动下钻。
+- 输出携带 verdict、证据数量、缺失查询、事实和图表证据引用。
 
-### Phase 4：Skill/MCP 收敛
+### 已完成：Skill/MCP 收敛
 
 - 将 Skill 改成 Analysis Recipe。
 - 将 `src/tools` 和 `src/mcp/tools` 的重复业务能力合并。
-- MCP 只保留协议 Adapter。
+- Query Catalog 通过 `CatalogMCPAdapter` 暴露工具发现和调用；业务规则仍只存在于 Catalog/ToolRuntime。
 
-### Phase 5：删除旧执行权
+### 已完成：删除旧执行权
 
-- 删除旧 Router/Orchestrator/ReAct 编排路径。
-- 删除模拟分析和 VisualizationAgent。
-- 将前端 Trace、API 文档和评测全部对齐新 Harness。
+- 删除旧 Router/Orchestrator/ReAct 编排路径以及 `VisualizationAgent` 服务实现。
+- 前端 Trace、API 工具列表和评测已对齐六节点 Harness。
 
 ## 16. 成熟度验收标准
 
