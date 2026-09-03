@@ -24,6 +24,15 @@ def _catalog_runtime() -> ToolRuntime:
             if arguments.get("query_type") != expected_type:
                 raise ValueError(f"query_type mismatch for {_query_id}")
             sql, bindings = compile_sql(_query_id, arguments)
+            # clickhouse-driver binds DateTime64 reliably as datetime objects;
+            # API/LLM boundaries may use ISO-8601 strings.
+            for key in ("start_time", "end_time", "baseline_start", "baseline_end"):
+                if isinstance(bindings.get(key), str):
+                    try:
+                        bindings[key] = datetime.fromisoformat(bindings[key].replace("Z", "+00:00"))
+                    except ValueError:
+                        # Unit tests and custom adapters may use symbolic bounds.
+                        pass
             rows = get_clickhouse_client().execute(sql, bindings)
             query_spec = spec_for(_query_id)
             typed_rows = [query_spec.output_model.model_validate(dict(zip(query_spec.columns, row))).model_dump(mode="json")
