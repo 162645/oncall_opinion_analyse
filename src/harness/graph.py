@@ -27,8 +27,8 @@ class HarnessExecutionResult:
 class EvidenceDrivenHarness:
     CORE_NODES = ("understand", "context", "planner", "executor", "verifier", "synthesizer")
 
-    def __init__(self, checkpointer=None):
-        self.runtime = _catalog_runtime()
+    def __init__(self, checkpointer=None, runtime=None):
+        self.runtime = runtime or _catalog_runtime()
         self.checkpointer = checkpointer or CheckpointerFactory.create(CheckpointConfig(
             backend=os.getenv("AGENT_CHECKPOINT_BACKEND", "memory"),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),

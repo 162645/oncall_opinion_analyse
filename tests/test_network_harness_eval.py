@@ -1,4 +1,5 @@
 from src.eval.network_harness_eval import compare_strategies, evaluate_cases, score_case, DEFAULT_CASES
+from src.eval.runners.harness_runner import run_harness_replay
 
 
 def test_network_eval_reports_interviewable_metrics():
@@ -22,3 +23,11 @@ def test_eval_matrix_and_strategy_comparison_are_available():
     row = score_case(DEFAULT_CASES[0], {"task": {}, "plan": {}, "execution": {}, "verification": {}, "answer": {}})
     result = compare_strategies({"harness": [row], "react": [row]})
     assert set(result) == {"harness", "react"}
+
+
+def test_replay_fixture_is_injected_into_real_harness():
+    import asyncio
+    fixture = {"ping.summary": {"statistics": [{"total_samples": 100, "valid_samples": 100,
+        "mean_rtt": 10, "median_rtt": 10, "p95_rtt": 20, "p99_rtt": 30}]}}
+    result = asyncio.run(run_harness_replay({"case_id": "replay-1", "query": "US RTT"}, fixture))
+    assert result["success"] and result["calls"][0]["query_id"] == "ping.summary"
