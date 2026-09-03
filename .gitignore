@@ -63,3 +63,4 @@ artifacts/
 # Locally generated Python wheel cache (kept outside source control)
 wheelhouse/*
 !wheelhouse/.gitkeep
+.ci-venv/
