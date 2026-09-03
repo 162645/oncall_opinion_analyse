@@ -55,10 +55,14 @@ async def llm_policy(query: str, observations: list[dict[str, Any]], catalog: li
               f"\nObservations={json.dumps(observations, ensure_ascii=False, default=str)[:10000]}")
     response = await get_llm_gateway().generate(prompt, config=LLMConfig(
         temperature=float(__import__("os").getenv("HARNESS_LLM_TEMPERATURE", "0")), max_tokens=512))
-    match = re.search(r"\{.*\}", response.content, re.S)
-    if not match:
+    start = response.content.find("{")
+    if start < 0:
         return {"final": True, "claims": []}
-    return json.loads(match.group(0))
+    try:
+        value, _ = json.JSONDecoder().raw_decode(response.content[start:])
+        return value if isinstance(value, dict) else {"final": True, "claims": []}
+    except json.JSONDecodeError:
+        return {"final": True, "claims": [], "invalid_decision": True}
 
 
 async def run_react_replay(case: Dict[str, Any], fixture: Dict[str, Any], *, max_tool_calls: int = 8,
@@ -80,6 +84,10 @@ async def run_react_replay(case: Dict[str, Any], fixture: Dict[str, Any], *, max
         decision = await policy(case["query"], observations, catalog)
         llm_calls.append({"latency_ms": round((time.perf_counter() - llm_started) * 1000, 3),
                           "input_observation_count": len(observations)})
+        if decision.get("invalid_decision"):
+            invalid_calls += 1
+            observations.append({"query_id": "__invalid_decision__", "status": "invalid"})
+            continue
         if decision.get("final"):
             break
         query_id = decision.get("query_id")
