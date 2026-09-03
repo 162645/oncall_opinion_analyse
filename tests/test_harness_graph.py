@@ -83,7 +83,7 @@ async def test_full_four_round_drilldown_with_fake_clickhouse(monkeypatch):
             if "GROUP BY prefix24" in sql:
                 return [("203.0.113.0/24", 100, 100, 180.0, 240.0)]
             if "uniqExact(ip_path_hash)" in sql:
-                return [("2026-01-01 01:00:00", 2, 100)]
+                return [("2026-01-01 01:00:00", 2, 100, 123)]
             if "ip_path_hash" in sql:
                 return [(123, 100, 8.0, 99)]
             if "toStartOfHour" in sql:

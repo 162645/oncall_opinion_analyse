@@ -7,7 +7,7 @@ from src.harness.nodes import _catalog_runtime
 def test_mcp_adapter_only_exposes_catalog_tools():
     tools = CatalogMCPAdapter(_catalog_runtime()).list_tools()
     assert {item["name"] for item in tools} == {
-        "ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24", "ping.outliers",
+        "ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24", "ping.outliers", "ping.compare_window",
         "trace.paths", "trace.path_change"
     }
 

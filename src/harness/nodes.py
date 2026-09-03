@@ -44,6 +44,43 @@ def spec_for(query_id: str):
     return CATALOG[query_id]
 
 
+def _latest_evidence(ledger: EvidenceLedger, query_id: str) -> Dict[str, Any] | None:
+    items = [item for item in ledger.all() if item.get("query_id") == query_id]
+    return items[-1] if items else None
+
+
+def _retryable(item: Dict[str, Any]) -> bool:
+    if item.get("status") == "observed":
+        return False
+    return item.get("error_kind") in {None, "timeout", "transient"}
+
+
+def _asn_concentration(ledger: EvidenceLedger) -> tuple[bool, List[Dict[str, Any]]]:
+    item = _latest_evidence(ledger, "ping.by_asn")
+    if not item or item.get("status") != "observed":
+        return False, []
+    rows = list((item.get("data") or {}).get("statistics", []))
+    rows = [row for row in rows if row.get("valid_samples") is None or float(row.get("valid_samples") or 0) >= 10]
+    rows.sort(key=lambda row: float(row.get("p95_rtt") or 0), reverse=True)
+    summary = _latest_evidence(ledger, "ping.summary")
+    summary_rows = (summary or {}).get("data", {}).get("statistics", [])
+    overall = float((summary_rows[0] if summary_rows else {}).get("p95_rtt") or 0)
+    if not overall and rows:
+        values = [float(row.get("p95_rtt") or 0) for row in rows]
+        overall = sum(values) / len(values)
+    concentrated = bool(rows and overall > 0 and float(rows[0].get("p95_rtt") or 0) > overall * 1.2)
+    return concentrated, rows
+
+
+def _top_prefix(ledger: EvidenceLedger) -> str:
+    item = _latest_evidence(ledger, "ping.by_prefix24")
+    rows = list(((item or {}).get("data") or {}).get("statistics", []))
+    if not rows:
+        return ""
+    rows.sort(key=lambda row: float(row.get("p95_rtt") or 0), reverse=True)
+    return str(rows[0].get("prefix24") or "")
+
+
 REGION_ALIASES = {
     "乌克兰": "UKRAINE", "ukraine": "UKRAINE", "俄罗斯": "RUSSIA", "russia": "RUSSIA",
     "中国": "CHINA", "china": "CHINA", "美国": "US", "us": "US", "英国": "UK", "uk": "UK",
@@ -55,13 +92,15 @@ def _event(state: Dict[str, Any], node: str, started: float, status: str = "succ
             "action": node, "duration_ms": int((time.perf_counter() - started) * 1000), "status": status, **extra}
 
 
-def _region(query: str) -> str:
+def _region(query: str) -> str | None:
     lower = query.lower()
     for alias, value in REGION_ALIASES.items():
         if alias.lower() in lower:
             return value
+    excluded = {"P50", "P90", "P95", "P99", "RTT", "ASN", "IP", "SQL", "HTTP", "TCP", "UDP"}
     match = re.search(r"\b([A-Z][A-Z0-9_-]{2,})\b", query)
-    return match.group(1).upper() if match else ""
+    candidate = match.group(1).upper() if match else None
+    return candidate if candidate not in excluded else None
 
 
 def _time_range(query: str) -> Dict[str, str]:
@@ -117,7 +156,8 @@ async def understand(state: Dict[str, Any]) -> Dict[str, Any]:
     task = {"kind": "network_analysis" if network else "knowledge", "region": _region(query), "time_range": _time_range(query),
             "metric": "p95" if "p95" in query.lower() else ("p99" if "p99" in query.lower() else "rtt"),
             "goal": "diagnose" if any(w in query.lower() for w in ("异常", "原因", "为什么", "故障")) else "describe",
-            "planning_mode": "long_tail" if complexity_signals >= 2 else "recipe"}
+            "planning_mode": "long_tail" if complexity_signals >= 2 else "recipe",
+            "needs_baseline": any(word in query.lower() for word in ("变差", "恶化", "相比", "之前", "历史", "baseline", "compare"))}
     low_confidence = not task["region"] or (task["kind"] == "network_analysis" and complexity_signals >= 2)
     if low_confidence and os.getenv("HARNESS_UNDERSTAND_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true":
         enriched = await _llm_task_spec(state, task)
@@ -184,31 +224,37 @@ def _steps(task: Dict[str, Any], execution: Dict[str, Any], verification: Dict[s
         return []
     tr = task["time_range"]
     ledger = EvidenceLedger(execution.get("evidence", []))
-    failed = {item.get("query_id") for item in execution.get("evidence", []) if item.get("status") != "observed"}
+    latest = {item.get("query_id"): item for item in ledger.all()}
+    retryable_failed = {query_id for query_id, item in latest.items() if item.get("status") != "observed" and _retryable(item)}
     base = {"region": region, "start_time": tr["start_time"], "end_time": tr["end_time"]}
     missing_evidence = (verification or {}).get("missing_evidence", [])
     if missing_evidence:
         requested = [item.get("query_id") if isinstance(item, dict) else item for item in missing_evidence]
+        prefix = _top_prefix(ledger)
         return [{"query_id": query_id, "params": {"query_type": CATALOG[query_id].tool_query_type,
-                                                    **({"interval": "hour"} if query_id == "ping.trend" else {}), **base}}
-                for query_id in requested if query_id in CATALOG and not ledger.has(query_id)]
+                                                    **({"interval": "hour"} if query_id == "ping.trend" else {}),
+                                                    **({"prefix24": prefix} if query_id in {"trace.paths", "trace.path_change"} else {}), **base}}
+                for query_id in requested if query_id in CATALOG and not ledger.has(query_id)
+                and (not _latest_evidence(ledger, query_id) or _retryable(_latest_evidence(ledger, query_id)))]
     if not execution.get("evidence"):
-        return [{"query_id": "ping.summary", "params": {"query_type": "ping_stats", **base}},
-                {"query_id": "ping.trend", "params": {"query_type": "ping_trend", "interval": "hour", **base}}]
-    if failed:
+        initial = [{"query_id": "ping.summary", "params": {"query_type": "ping_stats", **base}},
+                   {"query_id": "ping.trend", "params": {"query_type": "ping_trend", "interval": "hour", **base}}]
+        if task.get("needs_baseline"):
+            initial.insert(0, {"query_id": "ping.compare_window", "params": {"query_type": "ping_compare", **base}})
+        return initial
+    if retryable_failed:
         return [{"query_id": query_id, "params": {"query_type": CATALOG[query_id].tool_query_type,
-                                                       "interval": "hour", **base}}
-                for query_id in failed if query_id in CATALOG]
+                                                       **({"interval": "hour"} if query_id == "ping.trend" else {}), **base}}
+                for query_id in retryable_failed if query_id in CATALOG]
     if task.get("goal") != "diagnose":
         return []
     if not ledger.has("ping.by_asn"):
         return [{"query_id": "ping.by_asn", "params": {"query_type": "ping_stats", "group_by": ["ip_asn"], **base}}]
-    asn_rows = (ledger.observed("ping.by_asn")[0].get("data") or {}).get("statistics", [])
-    concentrated = len(asn_rows) > 1 and float(asn_rows[0].get("p95_rtt") or 0) > 1.5 * float(asn_rows[-1].get("p95_rtt") or 1)
+    concentrated, asn_rows = _asn_concentration(ledger)
     if concentrated and not ledger.has("ping.by_prefix24"):
         return [{"query_id": "ping.by_prefix24", "params": {"query_type": "ping_stats", **base}}]
     if ledger.has("ping.by_prefix24") and not ledger.has("trace.paths"):
-        return [{"query_id": "trace.paths", "params": {"query_type": "trace_stats", **base}}]
+        return [{"query_id": "trace.paths", "params": {"query_type": "trace_stats", "prefix24": _top_prefix(ledger), **base}}]
     return []
 
 
@@ -323,8 +369,8 @@ async def planner(state: Dict[str, Any]) -> Dict[str, Any]:
 async def _execute_with_runtime(state: Dict[str, Any], runtime: ToolRuntime) -> Dict[str, Any]:
     started = time.perf_counter()
     previous_execution = state.get("execution", {})
-    results = [item for item in previous_execution.get("results", []) if item.get("success")]
-    evidence = [item for item in previous_execution.get("evidence", []) if item.get("status") == "observed"]
+    results = list(previous_execution.get("results", []))
+    evidence = list(previous_execution.get("evidence", []))
     mcp = CatalogMCPAdapter(runtime)
     for step in state.get("plan", {}).get("steps", []):
         query_id, params = step["query_id"], step["params"]
@@ -342,18 +388,21 @@ async def _execute_with_runtime(state: Dict[str, Any], runtime: ToolRuntime) -> 
                 asyncio.to_thread(lambda: asyncio.run(mcp.call_tool(query_id, params, trace_id=state.get("run_id", "")))),
                 timeout=timeout_seconds,
             )
-            if not runtime_result.success:
-                raise RuntimeError(runtime_result.error or "catalog query failed")
-            item = {"query_id": query_id, "success": True, "data": runtime_result.data, "error": None,
+            item = {"query_id": query_id, "success": runtime_result.success, "data": runtime_result.data,
+                    "error": runtime_result.error, "error_kind": runtime_result.error_kind.value if runtime_result.error_kind else None,
+                    "attempts": runtime_result.attempts,
                     "duration_ms": int((time.perf_counter() - begin) * 1000)}
         except Exception as exc:
             item = {"query_id": query_id, "success": False, "data": None, "error": str(exc),
+                    "error_kind": "permanent", "attempts": 1,
                     "duration_ms": int((time.perf_counter() - begin) * 1000)}
         results.append(item)
+        prior_attempts = sum(1 for old in evidence if old.get("query_id") == query_id)
         evidence.append({"evidence_id": f"E{len(evidence) + 1}", "query_id": query_id, "status": "observed" if item["success"] else "unavailable",
                          "kind": "measurement", "data": item["data"], "error": item["error"], "source": "clickhouse",
                          "params": params, "observed_at": datetime.now(timezone.utc).isoformat(),
-                         "trace_id": state.get("run_id", "")})
+                         "trace_id": state.get("run_id", ""), "error_kind": item.get("error_kind"),
+                         "attempts": item.get("attempts", 0), "attempt": prior_attempts + 1})
     execution = {"results": results, "evidence": evidence}
     return {"execution": execution, "next_node": "verifier", "trace": state.get("trace", []) + [_event(state, "executor", started, reasoning=f"执行 {len(results)} 个目录查询并记录证据") ]}
 
@@ -374,7 +423,8 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
     evidence = state.get("execution", {}).get("evidence", [])
     ledger = EvidenceLedger(evidence)
     successful = ledger.observed()
-    has_errors = any(item.get("status") != "observed" for item in evidence)
+    latest_by_query = {item.get("query_id"): item for item in evidence}
+    has_errors = any(item.get("status") != "observed" for item in latest_by_query.values())
     task = state.get("task", {})
     facts = []
     consistency_issues = []
@@ -409,7 +459,7 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
             missing.append({"query_id": "ping.by_asn", "reason": "attribute latency by ASN", "priority": "high"})
         else:
             asn_rows = (ledger.observed("ping.by_asn")[0].get("data") or {}).get("statistics", [])
-            concentrated = len(asn_rows) > 1 and float(asn_rows[0].get("p95_rtt") or 0) > 1.5 * float(asn_rows[-1].get("p95_rtt") or 1)
+            concentrated, asn_rows = _asn_concentration(ledger)
             if concentrated and not ledger.has("ping.by_prefix24"):
                 coverage_issues.append("AS 内部仍缺少 Prefix24 归因")
                 missing.append({"query_id": "ping.by_prefix24", "reason": "localize concentrated ASN anomaly", "priority": "medium"})
@@ -426,6 +476,15 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
         if prefix_rows:
             facts.append({"fact": "prefix24_candidates", "claim": "异常候选集中到 Prefix24",
                           "value": prefix_rows[:3], "evidence_ids": [ledger.observed("ping.by_prefix24")[0]["evidence_id"]]})
+    if ledger.has("ping.compare_window"):
+        compare_item = ledger.observed("ping.compare_window")[0]
+        compare_rows = (compare_item.get("data") or {}).get("comparison", [])
+        if compare_rows:
+            row = compare_rows[0]
+            delta = row.get("p95_relative_delta")
+            degraded = delta is not None and float(delta) > 0.2
+            facts.append({"fact": "baseline_degradation", "claim": "当前窗口 P95 RTT 相比历史基线明显变差" if degraded else "当前窗口 P95 RTT 未明显高于历史基线",
+                          "value": row, "evidence_ids": [compare_item["evidence_id"]]})
     if ledger.has("trace.paths"):
         path_rows = (ledger.observed("trace.paths")[0].get("data") or {}).get("paths", [])
         facts.append({"fact": "traceroute_paths_observed", "claim": "已获得 Traceroute 路径证据",
@@ -435,25 +494,38 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
         trend_rows = (ledger.observed("ping.trend")[0].get("data") or {}).get("trend_data", [])
         change_rows = (ledger.observed("trace.path_change")[0].get("data") or {}).get("path_changes", [])
         trend_buckets = {str(row.get("time_bucket")) for row in trend_rows}
-        change_buckets = {str(row.get("time_bucket")) for row in change_rows}
-        overlap = sorted(trend_buckets & change_buckets)
+        ordered_changes = sorted(change_rows, key=lambda row: str(row.get("time_bucket")))
+        change_buckets, previous_path = [], None
+        for row in ordered_changes:
+            current_path = row.get("dominant_path_hash")
+            if previous_path is not None and current_path != previous_path:
+                change_buckets.append(str(row.get("time_bucket")))
+            previous_path = current_path
+        near_change_buckets = set(change_buckets)
+        for index, bucket in enumerate(trend_buckets):
+            if bucket in change_buckets:
+                near_change_buckets.update(trend_buckets[max(0, index - 1): index + 2])
+        overlap = sorted(set(trend_buckets) & near_change_buckets)
         ids = [ledger.observed("ping.trend")[0]["evidence_id"], ledger.observed("trace.path_change")[0]["evidence_id"]]
         if overlap:
-            cross_evidence = {"status": "correlated", "reason": "RTT 趋势与路径变化存在共同时间桶",
-                              "time_buckets": overlap, "evidence_ids": ids}
+            cross_evidence = {"status": "correlated", "reason": "检测到主导路径切换，且 RTT 异常时间邻近；仅表示相关，不证明因果",
+                              "time_buckets": overlap, "path_change_buckets": change_buckets, "evidence_ids": ids}
             facts.append({"fact": "rtt_path_time_correlation", "claim": "RTT 趋势与路径变化时间上相关，但不能单独证明因果",
                           "value": overlap, "evidence_ids": ids})
         else:
-            cross_evidence = {"status": "inconsistent", "reason": "RTT 趋势与路径变化时间窗口不重合", "evidence_ids": ids}
-            consistency_issues.append("Ping 趋势与路径变化没有重叠时间桶")
+            cross_evidence = {"status": "not_correlated", "reason": "没有检测到主导路径切换与 RTT 异常的时间邻近关系；不据此推断因果", "path_change_buckets": change_buckets, "evidence_ids": ids}
     elif ledger.has("trace.paths"):
         cross_evidence = {"status": "observed_only", "reason": "已观察到路径，但缺少路径变化与 RTT 的共同时间桶"}
     for fact in facts:
         if not fact.get("evidence_ids") or any(not ledger.contains(evidence_id, observed_only=True) for evidence_id in fact["evidence_ids"]):
             claimability_issues.append(f"事实 {fact.get('fact')} 缺少有效 Evidence ID")
+    diagnostic_facts = {"p95_spike_detected", "baseline_degradation", "asn_concentration", "prefix24_candidates",
+                        "traceroute_paths_observed", "rtt_path_time_correlation"}
+    if task.get("goal") == "diagnose" and not (set(fact.get("fact") for fact in facts) & diagnostic_facts):
+        coverage_issues.append("诊断尚未得到可定位异常或根因方向的事实")
     if not successful:
         verdict, score = ("PASS", 0.55) if task.get("kind") == "knowledge" else ("ABSTAIN", 0.0)
-    elif missing:
+    elif missing or coverage_issues:
         verdict, score = "PARTIAL", 0.55
     elif has_errors or consistency_issues or freshness_issues or claimability_issues:
         verdict, score = "PARTIAL", 0.55

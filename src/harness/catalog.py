@@ -50,10 +50,16 @@ class PingOutliersInput(QueryInput):
 
 class TracePathsInput(QueryInput):
     query_type: Literal["trace_stats"] = "trace_stats"
+    prefix24: str | None = None
 
 
 class TracePathChangeInput(QueryInput):
     query_type: Literal["trace_path_change"] = "trace_path_change"
+    prefix24: str | None = None
+
+
+class PingCompareInput(QueryInput):
+    query_type: Literal["ping_compare"] = "ping_compare"
 
 
 class SummaryRow(BaseModel):
@@ -108,6 +114,18 @@ class PathChangeRow(BaseModel):
     time_bucket: Any
     path_count: int
     sample_count: int
+    dominant_path_hash: int
+
+
+class CompareRow(BaseModel):
+    current_p50: float | None = None
+    current_p95: float | None = None
+    current_p99: float | None = None
+    baseline_p50: float | None = None
+    baseline_p95: float | None = None
+    baseline_p99: float | None = None
+    p95_delta: float | None = None
+    p95_relative_delta: float | None = None
 
 
 @dataclass(frozen=True)
@@ -128,8 +146,9 @@ CATALOG: Dict[str, QuerySpec] = {
     "ping.by_asn": QuerySpec("ping.by_asn", "按 AS 的 RTT 对比", "ping_by_asn.sql", "ping_stats", "statistics", ("ip_asn", "total_samples", "valid_samples", "mean_rtt", "p95_rtt"), PingByASNInput, ASNRow),
     "ping.by_prefix24": QuerySpec("ping.by_prefix24", "按 /24 前缀的 RTT 对比", "ping_by_prefix24.sql", "ping_stats", "statistics", ("prefix24", "total_samples", "valid_samples", "mean_rtt", "p95_rtt"), PingByPrefixInput, PrefixRow),
     "ping.outliers": QuerySpec("ping.outliers", "异常 RTT 样本", "ping_outliers.sql", "ping_outliers", "outliers", ("measure_time", "rtt_ms", "ip_asn", "prefix24"), PingOutliersInput, OutlierRow),
+    "ping.compare_window": QuerySpec("ping.compare_window", "当前窗口与历史窗口 RTT 对比", "ping_compare_window.sql", "ping_compare", "comparison", ("current_p50", "current_p95", "current_p99", "baseline_p50", "baseline_p95", "baseline_p99", "p95_delta", "p95_relative_delta"), PingCompareInput, CompareRow),
     "trace.paths": QuerySpec("trace.paths", "Traceroute 路径稳定性", "trace_paths.sql", "trace_stats", "paths", ("ip_path_hash", "occurrence_count", "avg_hop_count", "reached_count"), TracePathsInput, TracePathRow),
-    "trace.path_change": QuerySpec("trace.path_change", "按小时的路径变化", "trace_path_change.sql", "trace_path_change", "path_changes", ("time_bucket", "path_count", "sample_count"), TracePathChangeInput, PathChangeRow),
+    "trace.path_change": QuerySpec("trace.path_change", "按小时的路径变化", "trace_path_change.sql", "trace_path_change", "path_changes", ("time_bucket", "path_count", "sample_count", "dominant_path_hash"), TracePathChangeInput, PathChangeRow),
 }
 
 _REGION = re.compile(r"^[A-Z][A-Z0-9_]{1,31}$")
@@ -160,5 +179,13 @@ def compile_sql(query_id: str, params: Dict[str, Any]) -> Tuple[str, Dict[str, A
     sql = read_sql(query_id).replace("{region}", region)
     if "{" in sql or "}" in sql:
         raise ValueError(f"unresolved template placeholder in {query_id}")
-    values = {"start_time": normalized["start_time"], "end_time": normalized["end_time"], "limit": normalized["limit"]}
+    values = {"start_time": normalized["start_time"], "end_time": normalized["end_time"], "limit": normalized["limit"],
+              "prefix24": normalized.get("prefix24") or ""}
+    if query_id == "ping.compare_window":
+        from datetime import datetime, timedelta
+        start = datetime.fromisoformat(normalized["start_time"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(normalized["end_time"].replace("Z", "+00:00"))
+        duration = end - start
+        values["baseline_start"] = (start - duration).isoformat()
+        values["baseline_end"] = start.isoformat()
     return sql, values

@@ -224,7 +224,6 @@ class ToolRuntime:
                 breaker.failure()
             except Exception as exc:
                 last_error, last_kind = exc, ToolErrorKind.PERMANENT
-                breaker.failure()
                 break
 
             if attempts < tool.retry.max_attempts:
@@ -267,4 +266,3 @@ class ToolRuntime:
             actor=actor,
             trace_id=trace_id,
         ))
-

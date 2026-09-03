@@ -17,6 +17,12 @@ async def test_understand_extracts_region_and_time_window():
 
 
 @pytest.mark.asyncio
+async def test_understand_does_not_treat_metric_as_region():
+    update = await understand({"query": "分析最近 24 小时 P95 RTT 趋势", "trace": []})
+    assert update["task"]["region"] is None
+
+
+@pytest.mark.asyncio
 async def test_planner_only_emits_catalog_query_ids():
     state = {
         "task": {"kind": "network_analysis", "region": "UKRAINE", "goal": "diagnose",
@@ -48,6 +54,14 @@ def test_replan_only_retries_unavailable_queries():
         {"evidence_id": "E2", "query_id": "ping.trend", "status": "unavailable"},
     ]})
     assert [step["query_id"] for step in steps] == ["ping.trend"]
+
+
+def test_replan_does_not_retry_permanent_failure():
+    task = {"kind": "network_analysis", "region": "UKRAINE", "goal": "describe",
+            "time_range": {"start_time": "2026-01-01T00:00:00+00:00", "end_time": "2026-01-02T00:00:00+00:00"}}
+    steps = _steps(task, {"evidence": [{"evidence_id": "E1", "query_id": "ping.trend",
+                                         "status": "unavailable", "error_kind": "validation"}]})
+    assert steps == []
 
 
 def test_chart_spec_keeps_evidence_binding():
@@ -145,6 +159,22 @@ async def test_verifier_reports_structured_missing_evidence_and_invariants():
     assert update["verification"]["missing_evidence"][0]["query_id"] == "ping.by_asn"
     assert update["verification"]["checks"]["consistency"]["ok"] is False
     assert update["verification"]["facts"] == []
+
+
+@pytest.mark.asyncio
+async def test_verifier_requires_real_dominant_path_switch_for_correlation():
+    from src.harness.nodes import verifier
+    update = await verifier({
+        "task": {"kind": "network_analysis", "goal": "describe"},
+        "execution": {"evidence": [
+            {"evidence_id": "E1", "query_id": "ping.trend", "status": "observed",
+             "data": {"trend_data": [{"time_bucket": "01", "median_rtt": 10, "p95_rtt": 20},
+                                      {"time_bucket": "02", "median_rtt": 10, "p95_rtt": 80}]}},
+            {"evidence_id": "E2", "query_id": "trace.path_change", "status": "observed",
+             "data": {"path_changes": [{"time_bucket": "01", "path_count": 2, "sample_count": 10, "dominant_path_hash": 7},
+                                         {"time_bucket": "02", "path_count": 2, "sample_count": 10, "dominant_path_hash": 7}]}}
+        ]}, "trace": []})
+    assert update["verification"]["checks"]["cross_evidence"]["status"] == "not_correlated"
 
 
 @pytest.mark.asyncio

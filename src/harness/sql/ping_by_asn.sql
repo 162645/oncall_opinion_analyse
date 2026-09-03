@@ -8,5 +8,5 @@ FROM {region}__ping
 WHERE measure_time >= %(start_time)s
   AND measure_time < %(end_time)s
 GROUP BY ip_asn
-ORDER BY valid_samples DESC
+ORDER BY p95_rtt DESC, valid_samples DESC
 LIMIT %(limit)s

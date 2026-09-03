@@ -22,7 +22,9 @@ class EvidenceLedger:
                       "status": item.get("status", "unavailable"), "data": item.get("data"),
                       "error": item.get("error"), "quality": item.get("quality", "unknown"),
                       "source": item.get("source", "unknown"), "params": dict(item.get("params") or {}),
-                      "observed_at": item.get("observed_at"), "trace_id": item.get("trace_id", "")}
+                      "observed_at": item.get("observed_at"), "trace_id": item.get("trace_id", ""),
+                      "error_kind": item.get("error_kind"), "attempts": int(item.get("attempts", 0) or 0),
+                      "attempt": int(item.get("attempt", 1) or 1)}
         self._items[evidence_id] = normalized
         return normalized
 

@@ -506,3 +506,6 @@ A:
 - [RAGAS 评估框架](https://docs.ragas.io/)
 - [Qdrant 向量数据库](https://qdrant.tech/documentation/)
 - [OpenTelemetry](https://opentelemetry.io/docs/)
+# 当前架构说明
+
+本文件部分章节保留历史 Router/Reflection 示例，面试演示应以 `docs/HARNESS_ARCHITECTURE.md` 和 `src/harness/graph.py` 为准：当前主链路是 Understand → Context → Planner → Executor → Verifier → Synthesizer，旧图仅作为兼容代码。

@@ -1587,3 +1587,6 @@ func AlarmCallbackProxy(ctx context.Context, c *app.RequestContext) {
 2. 诚实承认不会的
 3. 展示学习能力和思考能力
 4. 引导到熟悉的领域
+# 当前架构说明
+
+本文包含历史方案与面试素材。当前可运行实现以 `docs/HARNESS_ARCHITECTURE.md`、`src/harness/graph.py` 和 `src/harness/nodes.py` 为准；其中 Router/Reflection 图不是当前 Chat API 的生产执行路径。

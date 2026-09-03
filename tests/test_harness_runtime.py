@@ -106,6 +106,14 @@ async def test_tool_runtime_validation_retry_permission_idempotency_and_circuit(
         slow, timeout_seconds=0.001, retry=RetryPolicy(max_attempts=1),
     ))
 
+    def permanent():
+        raise ValueError("bad contract")
+
+    runtime.register(ToolDefinition(
+        "permanent", "permanent", {"type": "object", "properties": {}, "additionalProperties": False},
+        permanent, retry=RetryPolicy(max_attempts=1),
+    ), CircuitBreakerConfig(failure_threshold=2, recovery_timeout_seconds=60))
+
     denied = await runtime.execute("write", {"value": 1}, granted_permission=PermissionLevel.READ, idempotency_key="write-1")
     assert denied.error_kind == ToolErrorKind.PERMISSION
     invalid = await runtime.execute("write", {"value": "bad"}, granted_permission=PermissionLevel.WRITE, idempotency_key="write-1")
@@ -119,6 +127,9 @@ async def test_tool_runtime_validation_retry_permission_idempotency_and_circuit(
     await runtime.execute("fail", {})
     opened = await runtime.execute("fail", {})
     assert opened.error_kind == ToolErrorKind.CIRCUIT_OPEN and calls["fail"] == 2
+    await runtime.execute("permanent", {})
+    await runtime.execute("permanent", {})
+    assert runtime._breakers["permanent"].failures == 0
     timed_out = await runtime.execute("slow", {})
     assert timed_out.error_kind == ToolErrorKind.TIMEOUT
 
