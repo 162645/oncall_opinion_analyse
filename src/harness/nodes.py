@@ -9,7 +9,40 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from src.clickhouse import get_clickhouse_client
-from .catalog import catalog_description, compile_sql, get_query_spec
+from src.runtime import PermissionLevel, ToolDefinition, ToolRuntime
+from .catalog import CATALOG, catalog_description, compile_sql, get_query_spec
+from .ledger import EvidenceLedger
+from .mcp_adapter import CatalogMCPAdapter
+
+
+def _catalog_runtime() -> ToolRuntime:
+    runtime = ToolRuntime()
+    for query_id, spec in CATALOG.items():
+        def handler(_query_id=query_id, **arguments):
+            expected_type = spec_for(_query_id).tool_query_type
+            if arguments.get("query_type") != expected_type:
+                raise ValueError(f"query_type mismatch for {_query_id}")
+            sql, bindings = compile_sql(_query_id, arguments)
+            rows = get_clickhouse_client().execute(sql, bindings)
+            return {spec_for(_query_id).result_key: [dict(zip(spec_for(_query_id).columns, row)) for row in rows]}
+
+        runtime.register(ToolDefinition(
+            name=query_id,
+            description=spec.description,
+            parameters={"type": "object", "properties": {
+                "query_type": {"type": "string"}, "region": {"type": "string"},
+                "start_time": {"type": "string"}, "end_time": {"type": "string"},
+                "interval": {"type": "string"}, "group_by": {"type": "array"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000}},
+                "required": ["query_type", "region", "start_time", "end_time"]},
+            handler=handler, permission=PermissionLevel.READ,
+            timeout_seconds=float(os.getenv("AGENT_TOOL_TIMEOUT_SECONDS", "8")),
+        ))
+    return runtime
+
+
+def spec_for(query_id: str):
+    return CATALOG[query_id]
 
 
 REGION_ALIASES = {
@@ -79,21 +112,27 @@ def _steps(task: Dict[str, Any], execution: Dict[str, Any]) -> List[Dict[str, An
     if not region:
         return []
     tr = task["time_range"]
-    previous = execution.get("evidence", [])
-    if previous:
-        # A re-plan only retries unavailable catalog items. It never repeats
-        # successful queries, which keeps recovery bounded and auditable.
-        failed = {item.get("query_id") for item in previous if item.get("status") != "observed"}
-        if not failed:
-            return []
-    else:
-        failed = set()
-    steps = [{"query_id": "ping.summary", "params": {"query_type": "ping_stats", "region": region, **tr}},
-             {"query_id": "ping.trend", "params": {"query_type": "ping_trend", "region": region, "interval": "hour", **tr}}]
-    if task.get("goal") == "diagnose" or any("anomaly" in str(x).lower() for x in execution.get("evidence", [])):
-        steps.append({"query_id": "ping.by_asn", "params": {"query_type": "ping_stats", "region": region, "group_by": ["ip_asn"], **tr}})
-        steps.append({"query_id": "trace.paths", "params": {"query_type": "trace_stats", "region": region, **tr}})
-    return [step for step in steps if not failed or step["query_id"] in failed]
+    ledger = EvidenceLedger(execution.get("evidence", []))
+    failed = {item.get("query_id") for item in execution.get("evidence", []) if item.get("status") != "observed"}
+    base = {"region": region, **tr}
+    if not execution.get("evidence"):
+        return [{"query_id": "ping.summary", "params": {"query_type": "ping_stats", **base}},
+                {"query_id": "ping.trend", "params": {"query_type": "ping_trend", "interval": "hour", **base}}]
+    if failed:
+        return [{"query_id": query_id, "params": {"query_type": CATALOG[query_id].tool_query_type,
+                                                       "interval": "hour", **base}}
+                for query_id in failed if query_id in CATALOG]
+    if task.get("goal") != "diagnose":
+        return []
+    if not ledger.has("ping.by_asn"):
+        return [{"query_id": "ping.by_asn", "params": {"query_type": "ping_stats", "group_by": ["ip_asn"], **base}}]
+    asn_rows = (ledger.observed("ping.by_asn")[0].get("data") or {}).get("statistics", [])
+    concentrated = len(asn_rows) > 1 and float(asn_rows[0].get("p95_rtt") or 0) > 1.5 * float(asn_rows[-1].get("p95_rtt") or 1)
+    if concentrated and not ledger.has("ping.by_prefix24"):
+        return [{"query_id": "ping.by_prefix24", "params": {"query_type": "ping_stats", **base}}]
+    if ledger.has("ping.by_prefix24") and not ledger.has("trace.paths"):
+        return [{"query_id": "trace.paths", "params": {"query_type": "trace_stats", **base}}]
+    return []
 
 
 def _chart_specs(evidence: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -106,7 +145,7 @@ def _chart_specs(evidence: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             rows = data.get("trend_data", [])
             if rows:
                 charts.append({"chart_id": "C1", "evidence_ids": [item["evidence_id"]], "chart_type": "line",
-                               "title": "Ping RTT 趋势", "x_axis": [str(row.get("time")) for row in rows],
+                               "title": "Ping RTT 趋势", "x_axis": [str(row.get("time_bucket")) for row in rows],
                                "y_axis_name": "RTT (ms)", "series": [
                                    {"name": "Median RTT", "data": [row.get("median_rtt") for row in rows]},
                                    {"name": "P95 RTT", "data": [row.get("p95_rtt") for row in rows]},
@@ -133,6 +172,8 @@ async def executor(state: Dict[str, Any]) -> Dict[str, Any]:
     previous_execution = state.get("execution", {})
     results = [item for item in previous_execution.get("results", []) if item.get("success")]
     evidence = [item for item in previous_execution.get("evidence", []) if item.get("status") == "observed"]
+    runtime = _catalog_runtime()
+    mcp = CatalogMCPAdapter(runtime)
     for step in state.get("plan", {}).get("steps", []):
         query_id, params = step["query_id"], step["params"]
         begin = time.perf_counter()
@@ -142,17 +183,16 @@ async def executor(state: Dict[str, Any]) -> Dict[str, Any]:
             spec = get_query_spec(query_id)
             if params.get("query_type") != spec.tool_query_type:
                 raise ValueError(f"query_type mismatch for {query_id}")
-            sql, bindings = compile_sql(query_id, params)
             timeout_seconds = float(os.getenv("AGENT_TOOL_TIMEOUT_SECONDS", "8"))
             # The legacy ClickHouse client is synchronous internally. Move it
             # off the event loop so a dead database cannot freeze the graph.
-            rows = await asyncio.wait_for(
-                asyncio.to_thread(lambda: get_clickhouse_client().execute(sql, bindings)),
+            runtime_result = await asyncio.wait_for(
+                asyncio.to_thread(lambda: asyncio.run(mcp.call_tool(query_id, params, trace_id=state.get("run_id", "")))),
                 timeout=timeout_seconds,
             )
-            records = [dict(zip(spec.columns, row)) for row in rows]
-            data = {spec.result_key: records}
-            item = {"query_id": query_id, "success": True, "data": data, "error": None,
+            if not runtime_result.success:
+                raise RuntimeError(runtime_result.error or "catalog query failed")
+            item = {"query_id": query_id, "success": True, "data": runtime_result.data, "error": None,
                     "duration_ms": int((time.perf_counter() - begin) * 1000)}
         except Exception as exc:
             item = {"query_id": query_id, "success": False, "data": None, "error": str(exc),
@@ -167,18 +207,41 @@ async def executor(state: Dict[str, Any]) -> Dict[str, Any]:
 async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
     started = time.perf_counter()
     evidence = state.get("execution", {}).get("evidence", [])
-    successful = [item for item in evidence if item.get("status") == "observed"]
+    ledger = EvidenceLedger(evidence)
+    successful = ledger.observed()
     has_errors = any(item.get("status") != "observed" for item in evidence)
-    if not evidence and state.get("task", {}).get("kind") == "knowledge":
-        verdict, score = "PASS", 0.55
-    elif successful and not has_errors:
-        verdict, score = "PASS", 0.9
-    elif successful:
+    task = state.get("task", {})
+    facts = []
+    trend = (ledger.observed("ping.trend")[0].get("data") or {}).get("trend_data", []) if ledger.has("ping.trend") else []
+    anomaly = False
+    if len(trend) >= 2:
+        p95 = [float(row.get("p95_rtt") or 0) for row in trend if row.get("p95_rtt") is not None]
+        if p95:
+            baseline = sorted(p95)[len(p95) // 2]
+            anomaly = max(p95) > baseline * 1.5 if baseline > 0 else False
+            facts.append({"fact": "p95_spike_detected", "value": anomaly, "evidence_ids": [ledger.observed("ping.trend")[0]["evidence_id"]]})
+    missing = []
+    if task.get("kind") == "network_analysis" and task.get("goal") == "diagnose":
+        if not ledger.has("ping.by_asn"):
+            missing.append("ping.by_asn")
+        else:
+            asn_rows = (ledger.observed("ping.by_asn")[0].get("data") or {}).get("statistics", [])
+            concentrated = len(asn_rows) > 1 and float(asn_rows[0].get("p95_rtt") or 0) > 1.5 * float(asn_rows[-1].get("p95_rtt") or 1)
+            if concentrated and not ledger.has("ping.by_prefix24"):
+                missing.append("ping.by_prefix24")
+            elif ledger.has("ping.by_prefix24") and not ledger.has("trace.paths"):
+                missing.append("trace.paths")
+    if not successful:
+        verdict, score = ("PASS", 0.55) if task.get("kind") == "knowledge" else ("ABSTAIN", 0.0)
+    elif missing:
+        verdict, score = "PARTIAL", 0.55
+    elif has_errors:
         verdict, score = "PARTIAL", 0.55
     else:
-        verdict, score = "ABSTAIN", 0.0
+        verdict, score = "PASS", 0.9
     verification = {"verdict": verdict, "score": score, "successful_evidence": len(successful), "total_evidence": len(evidence),
-                    "reason": "证据足够" if verdict == "PASS" else "数据源未返回完整证据，回答将明确标注限制"}
+                    "missing": missing, "facts": facts,
+                    "reason": "证据足够" if verdict == "PASS" else "仍缺少证明当前结论所需的证据，回答将明确标注限制"}
     next_node = "synthesizer"
     return {"verification": verification, "next_node": next_node, "trace": state.get("trace", []) + [_event(state, "verifier", started, reasoning=f"证据校验结果: {verdict}") ]}
 
@@ -186,7 +249,8 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
 async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
     started = time.perf_counter()
     task, verification = state.get("task", {}), state.get("verification", {})
-    evidence = state.get("execution", {}).get("evidence", [])
+    ledger = EvidenceLedger(state.get("execution", {}).get("evidence", []))
+    evidence = ledger.all()
     if task.get("kind") != "network_analysis":
         knowledge = state.get("context", {}).get("knowledge", [])
         if knowledge:
@@ -215,10 +279,13 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
             pass
     charts = _chart_specs(evidence)
     context_evidence = state.get("context", {}).get("knowledge", [])
-    all_evidence = evidence + [{"evidence_id": item["evidence_id"], "query_id": "knowledge.search", "status": "observed",
-                                "data": {"content": item["content"], "score": item["score"]}} for item in context_evidence]
+    for item in context_evidence:
+        ledger.add({"evidence_id": item["evidence_id"], "query_id": "knowledge.search", "status": "observed",
+                    "data": {"content": item["content"], "score": item["score"]}, "quality": "retrieved"})
+    all_evidence = ledger.all()
+    claim = ledger.bind_claim("CL1", [item["evidence_id"] for item in all_evidence]) if all_evidence else None
     answer_data = {"answer": answer, "charts": charts, "evidence": all_evidence,
                    "generated_by": generated_by,
-                   "claims": [{"claim_id": "CL1", "evidence_ids": [item["evidence_id"] for item in all_evidence]}] if all_evidence else [],
+                   "claims": [claim] if claim else [],
                    "verdict": verification.get("verdict")}
     return {"answer": answer_data, "next_node": "end", "trace": state.get("trace", []) + [_event(state, "synthesizer", started, reasoning="仅基于证据账本生成回答与图表数据") ]}

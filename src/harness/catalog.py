@@ -20,6 +20,7 @@ CATALOG: Dict[str, QuerySpec] = {
     "ping.summary": QuerySpec("ping.summary", "整体 RTT 与 P95/P99", "ping_summary.sql", "ping_stats", "statistics", ("total_samples", "valid_samples", "mean_rtt", "median_rtt", "p95_rtt", "p99_rtt")),
     "ping.trend": QuerySpec("ping.trend", "按小时的 RTT 趋势", "ping_trend.sql", "ping_trend", "trend_data", ("time_bucket", "sample_count", "valid_samples", "mean_rtt", "median_rtt", "p95_rtt")),
     "ping.by_asn": QuerySpec("ping.by_asn", "按 AS 的 RTT 对比", "ping_by_asn.sql", "ping_stats", "statistics", ("ip_asn", "total_samples", "valid_samples", "mean_rtt", "p95_rtt")),
+    "ping.by_prefix24": QuerySpec("ping.by_prefix24", "按 /24 前缀的 RTT 对比", "ping_by_prefix24.sql", "ping_stats", "statistics", ("prefix24", "total_samples", "valid_samples", "mean_rtt", "p95_rtt")),
     "trace.paths": QuerySpec("trace.paths", "Traceroute 路径稳定性", "trace_paths.sql", "trace_stats", "paths", ("ip_path_hash", "occurrence_count", "avg_hop_count", "reached_count")),
 }
 

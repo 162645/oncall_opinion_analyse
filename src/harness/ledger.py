@@ -1,0 +1,41 @@
+"""Evidence ledger: the only fact store consumed by Verifier and Synthesizer."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Iterable, List
+
+
+class EvidenceLedger:
+    def __init__(self, items: Iterable[Dict[str, Any]] = ()):
+        self._items: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            self.add(item)
+
+    def add(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        evidence_id = str(item.get("evidence_id", "")).strip()
+        if not evidence_id:
+            raise ValueError("evidence_id is required")
+        normalized = {"evidence_id": evidence_id, "query_id": item.get("query_id", "unknown"),
+                      "status": item.get("status", "unavailable"), "data": item.get("data"),
+                      "error": item.get("error"), "quality": item.get("quality", "unknown")}
+        self._items[evidence_id] = normalized
+        return normalized
+
+    def all(self) -> List[Dict[str, Any]]:
+        return list(self._items.values())
+
+    def observed(self, query_id: str | None = None) -> List[Dict[str, Any]]:
+        return [item for item in self._items.values()
+                if item.get("status") == "observed" and (query_id is None or item.get("query_id") == query_id)]
+
+    def has(self, query_id: str) -> bool:
+        return bool(self.observed(query_id))
+
+    def missing(self, required_query_ids: Iterable[str]) -> List[str]:
+        return [query_id for query_id in required_query_ids if not self.has(query_id)]
+
+    def bind_claim(self, claim_id: str, evidence_ids: Iterable[str]) -> Dict[str, Any]:
+        ids = list(evidence_ids)
+        if not ids or any(evidence_id not in self._items for evidence_id in ids):
+            raise ValueError(f"claim {claim_id} must reference existing evidence")
+        return {"claim_id": claim_id, "evidence_ids": ids}

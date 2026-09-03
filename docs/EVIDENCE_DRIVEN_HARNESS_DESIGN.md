@@ -3,6 +3,8 @@
 > 版本：v1 设计稿  
 > 目标：把项目从“多个 Agent/工具的集合”收敛为一个面向主动网络测量数据的、可解释、可恢复、可评测的 Agent 分析 Harness。
 
+> 当前实现状态：六节点 LangGraph 已作为唯一执行入口；Ping/Traceroute 查询通过统一 Query Catalog、MCP 适配层和 ToolRuntime 执行；Verifier 与 Synthesizer 共享 EvidenceLedger。远程数据源不可用时，系统会保守降级为 `ABSTAIN/PARTIAL`，不会伪造网络结论。
+
 ## 1. 一句话定义
 
 本项目不是让 LLM 直接生成 SQL，也不是把 PingAgent、TracerouteAgent、RAGAgent 机械串起来。

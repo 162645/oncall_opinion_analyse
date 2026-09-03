@@ -11,5 +11,6 @@ def get_harness():
 
 
 from .models import AnalysisPlan, Evidence, PlanStep, TaskSpec, TimeRange, Verification
+from .ledger import EvidenceLedger
 
-__all__ = ["get_harness", "AnalysisPlan", "Evidence", "PlanStep", "TaskSpec", "TimeRange", "Verification"]
+__all__ = ["get_harness", "EvidenceLedger", "AnalysisPlan", "Evidence", "PlanStep", "TaskSpec", "TimeRange", "Verification"]
