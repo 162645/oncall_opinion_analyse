@@ -1,0 +1,55 @@
+.data-table-card {
+  margin-top: 16px;
+  overflow: visible;
+}
+
+.table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--semi-color-border);
+}
+
+/* 表格行悬停效果 */
+.data-table-card .semi-table-tbody > .semi-table-row:hover {
+  background-color: var(--semi-color-bg-1);
+}
+
+/* 可点击行 */
+.data-table-card .semi-table-tbody > .semi-table-row[style*="cursor: pointer"]:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+/* 标签样式调整 */
+.data-table-card .semi-tag {
+  margin: 0 2px;
+}
+
+/* 结果表独立滚动，避免与页面主滚动容器互相抢占滚轮/触控事件。 */
+.data-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.data-table-scroll .semi-table-wrapper {
+  min-width: 100%;
+}
+
+@media (max-width: 768px) {
+  .table-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .table-header > .semi-space:last-child {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

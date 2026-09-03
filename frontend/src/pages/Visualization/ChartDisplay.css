@@ -1,0 +1,94 @@
+.chart-display {
+  margin-bottom: 16px;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--semi-color-border);
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.chart-title-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chart-content {
+  padding: 8px 0;
+}
+
+.chart-footer {
+  padding-top: 8px;
+}
+
+.chart-loading,
+.chart-empty {
+  min-height: 300px;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+}
+
+/* 指标选择器样式 */
+.metrics-selector {
+  padding: 12px;
+  background: var(--semi-color-bg-1);
+  border-radius: 6px;
+}
+
+.metrics-actions {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--semi-color-border);
+}
+
+.metrics-selector .semi-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.metrics-selector .semi-checkbox {
+  min-width: 100px;
+}
+
+/* 图表响应式 */
+.chart-content canvas {
+  max-width: 100%;
+}
+
+/* 折叠面板优化 */
+.chart-display .semi-collapse {
+  border: 1px solid var(--semi-color-border);
+}
+
+.chart-display .semi-collapse-header {
+  background: var(--semi-color-bg-1);
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .chart-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .chart-header > .semi-space {
+    justify-content: flex-start;
+  }
+
+  .metrics-selector .semi-checkbox {
+    min-width: 80px;
+  }
+}

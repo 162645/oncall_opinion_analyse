@@ -1,0 +1,65 @@
+.empty-state-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.empty-state-small {
+  padding: 24px 16px;
+}
+
+.empty-state-large {
+  padding: 80px 32px;
+}
+
+.empty-state-icon {
+  color: #bfbfbf;
+  opacity: 0.8;
+}
+
+.empty-state-small .empty-state-icon {
+  transform: scale(0.8);
+}
+
+.empty-state-large .empty-state-icon {
+  transform: scale(1.2);
+}
+
+/* 暗色主题 */
+@media (prefers-color-scheme: dark) {
+  .empty-state-icon {
+    color: #666;
+  }
+}
+
+/* 动画 */
+@keyframes empty-bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.empty-state-animated .empty-state-icon {
+  animation: empty-bounce 2s ease-in-out infinite;
+}
+
+/* 搜索空状态 */
+.empty-state-search .empty-state-icon {
+  color: var(--semi-color-tertiary);
+}
+
+/* 错误空状态 */
+.empty-state-error .empty-state-icon {
+  color: var(--semi-color-danger);
+}
+
+/* 网络错误空状态 */
+.empty-state-network .empty-state-icon {
+  color: var(--semi-color-warning);
+}

@@ -1,0 +1,9 @@
+services:
+  oncall-registry:
+    image: registry:2
+    container_name: oncall-registry
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+    volumes:
+      - /var/lib/oncall-registry:/var/lib/registry

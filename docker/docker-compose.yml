@@ -1,0 +1,297 @@
+services:
+  # ===== 核心服务 =====
+
+  # Go 核心服务 (新增)
+  # 处理告警回调、业务逻辑，通过 gRPC 调用 Python AI 层
+  go-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.go
+    container_name: oncall-go-service
+    ports:
+      - "8080:8080"
+    environment:
+      - GRPC_PYTHON_ADDRESS=python-service:50051
+      - TCC_CONFIG_PATH=/app/conf
+    depends_on:
+      python-service:
+        condition: service_healthy
+    networks:
+      - oncall-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Python AI 服务 (重构)
+  # 同时提供 HTTP (8000) 和 gRPC (50051) 服务
+  python-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.python
+    container_name: oncall-python-service
+    ports:
+      - "8000:8000"   # HTTP API
+      - "50051:50051" # gRPC API
+    environment:
+      # 环境设置
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - DEBUG=${DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+      # LLM API
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
+      # ClickHouse
+      - CLICKHOUSE_HOST=${CLICKHOUSE_HOST}
+      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT:-9000}
+      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-net_measure}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_PROTOCOL=${CLICKHOUSE_PROTOCOL:-https}
+      # Qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-knowledge}
+      # Redis
+      - REDIS_URL=redis://redis:6379
+      - AGENT_CHECKPOINT_BACKEND=redis
+      - AGENT_CHECKPOINT_PREFIX=oncall_agent
+      - AGENT_CHECKPOINT_TTL_MINUTES=1440
+      # Neo4j
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=password
+      # MinIO
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    volumes:
+      - ../src:/app/src
+      - knowledge-data:/app/data
+    depends_on:
+      - redis
+      - qdrant
+      - minio
+    networks:
+      - oncall-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # React 前端
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: oncall-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - python-service
+    networks:
+      - oncall-network
+    restart: unless-stopped
+
+  # ===== 数据存储 =====
+
+  # MCP Toolbox - 数据库连接中间件
+  toolbox:
+    image: googleapis/mcp-toolbox:latest
+    container_name: mcp-toolbox
+    ports:
+      - "5000:5000"
+    volumes:
+      - ../config/tools.yaml:/app/tools.yaml:ro
+    environment:
+      # ClickHouse 配置 (统一从 .env 读取)
+      - CLICKHOUSE_HOST=${CLICKHOUSE_HOST}
+      - CLICKHOUSE_PORT=${CLICKHOUSE_HTTP_PORT:-8123}
+      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-net_measure}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_PROTOCOL=${CLICKHOUSE_PROTOCOL:-https}
+      - CLICKHOUSE_SECURE=${CLICKHOUSE_SECURE:-true}
+    command: ["--tools-file=/app/tools.yaml"]
+    networks:
+      - oncall-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Stack: 会话缓存 + LangGraph Checkpoint (requires RedisJSON/Search)
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: oncall-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    environment:
+      - REDIS_ARGS=--appendonly yes
+    networks:
+      - oncall-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Qdrant 向量数据库
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: oncall-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - oncall-network
+    restart: unless-stopped
+    healthcheck:
+      # qdrant 镜像不包含 curl/wget；进程存活即代表服务已就绪
+      test: ["CMD-SHELL", "exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Neo4j 知识图谱
+  neo4j:
+    image: neo4j:5-community
+    container_name: oncall-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    networks:
+      - oncall-network
+    restart: unless-stopped
+
+  # MinIO 对象存储
+  minio:
+    image: minio/minio:latest
+    container_name: oncall-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - oncall-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===== 监控服务 (可选) =====
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: oncall-otel-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "9464:9464"
+    networks:
+      - oncall-network
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    container_name: oncall-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14317:4317"
+    networks:
+      - oncall-network
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+  # Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: oncall-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    networks:
+      - oncall-network
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: oncall-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - oncall-network
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+# ===== 网络配置 =====
+networks:
+  oncall-network:
+    # Keep a stable network name even when Compose is invoked from different directories.
+    # This prevents service-name DNS failures after a redeploy.
+    name: oncall-network
+    driver: bridge
+
+# ===== 数据卷 =====
+volumes:
+  redis-data:
+  qdrant-data:
+  neo4j-data:
+  neo4j-logs:
+  minio-data:
+  knowledge-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,228 @@
+.app-layout {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  padding: 0 24px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  flex-shrink: 0;
+}
+
+.app-body {
+  margin-top: 56px;
+  display: flex;
+  flex: 1;
+  min-height: calc(100vh - 56px);
+}
+
+.app-sider {
+  background: #fff;
+  width: 200px !important;
+  min-width: 200px !important;
+  position: fixed;
+  left: 0;
+  top: 56px;
+  bottom: 0;
+  overflow-y: auto;
+  border-right: 1px solid #e8e8e8;
+  flex-shrink: 0;
+}
+
+.app-content {
+  margin-left: 200px;
+  padding: 20px;
+  padding-top: 20px !important;
+  background: #f5f7fa;
+  flex: 1;
+  overflow-y: auto;
+  min-height: calc(100vh - 56px);
+  box-sizing: border-box;
+}
+
+.app-footer {
+  background: #fff;
+  text-align: center;
+  padding: 10px 24px;
+  color: #999;
+  font-size: 12px;
+  border-top: 1px solid #e8e8e8;
+  margin-left: 200px;
+  height: 40px;
+  flex-shrink: 0;
+}
+
+/* 页面容器通用样式 - 确保内容从顶部开始 */
+.page-container {
+  min-height: calc(100vh - 56px - 40px);
+  display: flex;
+  flex-direction: column;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e8e8e8;
+  flex-shrink: 0;
+}
+
+.page-content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.route-loading {
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--semi-color-text-2, #666);
+  font-size: 14px;
+}
+
+/* 响应式设计 */
+@media (max-width: 1200px) {
+  .app-sider {
+    width: 180px !important;
+    min-width: 180px !important;
+  }
+
+  .app-content {
+    margin-left: 180px;
+  }
+
+  .app-footer {
+    margin-left: 180px;
+  }
+}
+
+@media (max-width: 992px) {
+  .app-sider {
+    width: 60px !important;
+    min-width: 60px !important;
+  }
+
+  .app-content {
+    margin-left: 60px;
+    padding: 16px;
+  }
+
+  .app-footer {
+    margin-left: 60px;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-sider {
+    display: none;
+  }
+
+  .app-content {
+    margin-left: 0;
+    padding: 12px;
+  }
+
+  .app-footer {
+    margin-left: 0;
+  }
+}
+
+/* 全局加载动画 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d9d9d9;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #bfbfbf;
+}
+
+/* 卡片样式 */
+.semi-card {
+  border-radius: 8px;
+}
+
+/* 标签页样式优化 */
+.semi-tabs-tab {
+  transition: all 0.2s ease;
+}
+
+/* 输入框焦点效果 */
+.semi-input:focus,
+.semi-textarea:focus {
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.04);
+}
+
+/* Toast 动画 */
+.semi-toast {
+  animation: fadeIn 0.3s ease;
+}
+
+/* 空状态样式 */
+.empty-state-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  text-align: center;
+}
+
+/* 加载状态容器 */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 24px;
+  text-align: center;
+}
+
+/* 下拉菜单动画 */
+.semi-dropdown-menu {
+  animation: fadeIn 0.2s ease;
+}
+
+/* 模态框动画 */
+.semi-modal-content {
+  animation: fadeIn 0.3s ease;
+}

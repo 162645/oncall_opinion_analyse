@@ -1,0 +1,171 @@
+.tool-call-display {
+  margin-top: 12px;
+  border: 1px solid var(--semi-color-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.tool-call-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-calls-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tool-call-item {
+  border: 1px solid var(--semi-color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.tool-call-item:hover {
+  border-color: var(--semi-color-primary-hover);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.tool-call-success {
+  border-left: 3px solid var(--semi-color-success);
+}
+
+.tool-call-error {
+  border-left: 3px solid var(--semi-color-danger);
+  background: rgba(245, 34, 45, 0.02);
+}
+
+.tool-call-running {
+  border-left: 3px solid var(--semi-color-primary);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.tool-call-pending {
+  border-left: 3px solid var(--semi-color-tertiary);
+  opacity: 0.7;
+}
+
+.tool-call-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--semi-color-bg-1);
+}
+
+.tool-status-icon {
+  display: flex;
+  align-items: center;
+}
+
+.tool-call-description {
+  padding: 0 12px 8px;
+  background: var(--semi-color-bg-1);
+}
+
+.tool-params {
+  padding: 8px 0;
+}
+
+.tool-param-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 4px 0;
+  gap: 8px;
+}
+
+.tool-param-key {
+  min-width: 100px;
+  color: var(--semi-color-text-2);
+}
+
+.tool-param-value {
+  flex: 1;
+  margin: 0;
+  padding: 4px 8px;
+  background: var(--semi-color-bg-2);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.tool-result {
+  padding: 8px 0;
+}
+
+.tool-result-error {
+  padding: 8px;
+  background: rgba(245, 34, 45, 0.05);
+  border-radius: 4px;
+}
+
+.tool-result-data {
+  padding: 8px;
+  background: rgba(82, 196, 26, 0.05);
+  border-radius: 4px;
+}
+
+.tool-result-stats {
+  padding: 8px;
+  background: var(--semi-color-bg-2);
+  border-radius: 4px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.stats-item {
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  background: var(--semi-color-bg-1);
+  border-radius: 4px;
+}
+
+.tool-result-content {
+  margin: 0;
+  padding: 8px;
+  background: var(--semi-color-bg-2);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* 动画效果 */
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+.tool-call-running .tool-status-icon {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Semi Design 覆盖样式 */
+.tool-call-display .semi-collapse-content {
+  padding: 0 12px 12px;
+}
+
+.tool-call-display .semi-collapse-item {
+  margin-bottom: 0;
+}
+
+.tool-call-item .semi-collapse-content {
+  padding: 0 8px 8px;
+}
