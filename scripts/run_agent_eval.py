@@ -45,7 +45,11 @@ async def run(cases: list[NetworkEvalCase], fixture_dir: Path, case_rows: list[d
         raw.append({"case_id": case.case_id, "case_type": case.case_type, "harness": h,
                     "react": r, "harness_calls": replay["calls"], "react_calls": react["calls"],
                     "react_llm_calls": react["llm_calls"], "react_strategy": react["strategy"]})
-    return {"summary": {"harness": evaluate_cases(harness_results), "free_react": evaluate_cases(react_results)}, "cases": raw}
+    def operational(rows: list[dict[str, Any]], key: str) -> dict[str, float]:
+        values = [len(x[key]) for x in raw]
+        return {"average_tool_calls": sum(values) / len(values), "p95_tool_calls": sorted(values)[max(0, int(len(values) * .95) - 1)]}
+    return {"summary": {"harness": {**evaluate_cases(harness_results), **operational(harness_results, "harness_calls")},
+                         "free_react": {**evaluate_cases(react_results), **operational(react_results, "react_calls")}}, "cases": raw}
 
 
 def main() -> None:
@@ -66,6 +70,15 @@ def main() -> None:
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.write_text(rendered + "\n", encoding="utf-8")
+        summary = report["summary"]
+        md = ["# Agent Replay Comparison", "", "| Metric | Free ReAct | Evidence Harness |", "|---|---:|---:|",
+              f"| Cases | {summary['free_react']['cases']} | {summary['harness']['cases']} |",
+              f"| Unsupported claim rate | {summary['free_react']['unsupported_claim_rate']:.2%} | {summary['harness']['unsupported_claim_rate']:.2%} |",
+              f"| Key evidence coverage | {summary['free_react']['evidence_coverage']:.2%} | {summary['harness']['evidence_coverage']:.2%} |",
+              f"| Correct abstain rate | {summary['free_react']['correct_abstain_rate']:.2%} | {summary['harness']['correct_abstain_rate']:.2%} |",
+              f"| Average tool calls | {summary['free_react']['average_tool_calls']:.2f} | {summary['harness']['average_tool_calls']:.2f} |",
+              "", "Raw per-case results are stored in `agent_comparison.json`."]
+        args.output.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print(rendered)
 
 
