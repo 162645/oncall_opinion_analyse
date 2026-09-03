@@ -80,7 +80,7 @@ async def execute_graph(request: ExecuteRequest):
 
     return ExecuteResponse(
         success=result.success,
-        response=result.response,
+        response=result.message,
         intent=result.state.get("task", {}).get("kind", "unknown"),
         confidence=result.confidence,
         steps=result.trace,
@@ -134,6 +134,7 @@ async def list_tools():
             {"name": "ping.summary", "description": "整体 RTT 与 P95/P99"},
             {"name": "ping.trend", "description": "按小时 RTT 趋势"},
             {"name": "ping.by_asn", "description": "按 AS 的 RTT 对比"},
+            {"name": "ping.by_prefix24", "description": "按 /24 前缀的 RTT 对比"},
             {"name": "trace.paths", "description": "Traceroute 路径稳定性"},
         ],
     }
