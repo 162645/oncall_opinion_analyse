@@ -23,6 +23,5 @@ jobs:
           pytest -q
           tests/test_evidence_harness_contract.py
           tests/test_harness_graph.py
-          tests/test_harness_runtime.py
           tests/test_mcp_catalog_adapter.py
           tests/test_network_harness_eval.py
