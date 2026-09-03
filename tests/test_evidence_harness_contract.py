@@ -107,11 +107,47 @@ async def test_synthesizer_claims_reference_only_ledger_evidence():
     update = await synthesizer({
         "query": "分析 UKRAINE 延迟",
         "task": {"kind": "network_analysis", "region": "UKRAINE"},
-        "verification": {"verdict": "PASS", "successful_evidence": 1, "total_evidence": 1},
+        "verification": {"verdict": "PASS", "successful_evidence": 1, "total_evidence": 1,
+                         "facts": [{"fact": "p95_spike_detected", "claim": "P95 RTT 上升",
+                                    "evidence_ids": ["E1"]}]},
         "execution": {"evidence": [{"evidence_id": "E1", "query_id": "ping.summary",
                                       "status": "observed", "data": {"statistics": []}}]},
         "context": {}, "trace": [],
     })
     claim = update["answer"]["claims"][0]
-    assert claim == {"claim_id": "CL1", "evidence_ids": ["E1"]}
+    assert claim["claim_id"] == "CL1"
+    assert claim["evidence_ids"] == ["E1"]
+    assert claim["fact"] == "p95_spike_detected"
     assert {item["evidence_id"] for item in update["answer"]["evidence"]} == {"E1"}
+
+
+@pytest.mark.asyncio
+async def test_verifier_reports_structured_missing_evidence_and_invariants():
+    from src.harness.nodes import verifier
+    update = await verifier({
+        "task": {"kind": "network_analysis", "goal": "diagnose"},
+        "execution": {"evidence": [{"evidence_id": "E1", "query_id": "ping.trend", "status": "observed",
+                                      "data": {"trend_data": [{"time_bucket": "t", "median_rtt": 90, "p95_rtt": 40}]}}]},
+        "trace": [],
+    })
+    assert update["verification"]["missing_evidence"][0]["query_id"] == "ping.by_asn"
+    assert update["verification"]["checks"]["consistency"]["ok"] is False
+    assert update["verification"]["facts"] == []
+
+
+@pytest.mark.asyncio
+async def test_long_tail_planner_is_guarded_to_catalog(monkeypatch):
+    class FakeGateway:
+        async def generate(self, _prompt):
+            return type("Response", (), {"content": '[{"query_id":"ping.summary","params":{"region":"UKRAINE"}}, {"query_id":"drop.table","params":{}}]'})()
+
+    monkeypatch.setenv("HARNESS_PLANNER_ENABLED", "true")
+    monkeypatch.setattr("src.llm.get_llm_gateway", lambda: FakeGateway())
+    update = await planner({
+        "task": {"kind": "network_analysis", "region": "UKRAINE", "goal": "describe",
+                 "planning_mode": "long_tail", "time_range": {"start_time": "a", "end_time": "b"}},
+        "context": {"catalog": list(CATALOG)}, "execution": {"evidence": []}, "verification": {},
+        "round": 0, "trace": [],
+    })
+    assert update["plan"]["source"] == "llm_guarded"
+    assert [step["query_id"] for step in update["plan"]["steps"]] == ["ping.summary"]

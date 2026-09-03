@@ -56,7 +56,7 @@ class EvidenceDrivenHarness:
         should_retry = (verification.get("verdict") in {"ABSTAIN", "PARTIAL"}
                         and task.get("kind") == "network_analysis"
                         and bool(plan.get("steps"))
-                        and int(state.get("round", 0)) < int(state.get("max_rounds", 3)))
+                        and int(state.get("round", 0)) < int(state.get("max_rounds", 4)))
         return "planner" if should_retry else "synthesizer"
 
     async def _setup(self):

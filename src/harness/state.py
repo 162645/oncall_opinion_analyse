@@ -34,7 +34,9 @@ def create_initial_state(query: str, session_id: str, run_id: str, metadata: Opt
         "answer": {},
         "trace": [],
         "round": 0,
-        "max_rounds": int((metadata or {}).get("max_rounds", os.getenv("AGENT_MAX_ROUNDS", "3"))),
+        # Four rounds are required for the full evidence path:
+        # baseline/trend → ASN → Prefix24 → Traceroute.
+        "max_rounds": int((metadata or {}).get("max_rounds", os.getenv("AGENT_MAX_ROUNDS", "4"))),
         "next_node": "understand",
         "error": None,
     }

@@ -237,7 +237,7 @@ Planner 的输出必须是可校验的 `AnalysisPlan`：
 }
 ```
 
-同一轮内无依赖的只读查询可以并行执行；下一轮只能针对 Verifier 返回的 `missing_evidence` 进行规划，不能重复已经成功的查询。
+同一轮内无依赖的只读查询可以并行执行；下一轮优先消费 Verifier 返回的结构化 `missing_evidence`，不能重复已经成功的查询。常见问题走 Recipe-first，复杂长尾问题可由 LLM 选择 Query Primitive，但必须经过 Plan Guard。
 
 ### 5.4 ExecutorNode：执行一批计划步骤
 
@@ -258,17 +258,16 @@ Executor 不写 SQL、不拼 Prompt、不决定要不要继续调查。
 
 Verifier 取代当前“固定 confidence + Reflection”的形式，检查：
 
-1. 目标覆盖：是否同时回答了“是否异常、异常范围、可能原因”。
-2. 数据质量：样本数、覆盖时间、缺失比例、新鲜度。
-3. 数值一致性：P50/P95/P99、趋势和分组结果是否一致。
-4. 跨源一致性：Ping 变化是否得到 Traceroute 或其他证据支持。
-5. 结论强度：现有证据允许说“事实”“相关性”还是只能说“假设”。
+1. Coverage：是否满足当前目标所需的证据范围，并输出结构化 `missing_evidence`。
+2. Consistency：样本计数、P50/P95/P99 和分组结果是否违反基本统计不变量。
+3. Freshness：证据采集时间是否有效，拒绝未来时间或明显过期证据。
+4. Claimability：每个事实是否能绑定到已观测的 Evidence ID。
 
 只允许输出四类 Verdict：
 
 ```text
-SUFFICIENT          证据充分，可以回答
-NEED_MORE_EVIDENCE  证据缺口明确，返回 Planner
+PASS                证据充分，可以回答
+NEED_MORE_EVIDENCE  证据缺口明确，返回 Planner（内部以 PARTIAL/ABSTAIN 触发）
 PARTIAL             达到预算，输出已有可靠结论
 ABSTAIN             数据不足或证据冲突，拒绝归因
 ```
@@ -289,7 +288,7 @@ ChartSpec
 
 ```json
 {
-  "verdict": "SUFFICIENT",
+  "verdict": "PASS | PARTIAL | ABSTAIN",
   "claims": [
     {
       "text": "P95 RTT 相比上一窗口升高约 89%",
@@ -375,14 +374,14 @@ Synthesize
 建议预算：
 
 ```text
-max_plan_rounds = 3
+max_plan_rounds = 4
 max_query_steps = 8
 max_tool_failures = 3
 max_total_latency = 45s
 max_sql_fallback = 1
 ```
 
-如果三轮后仍然无法归因，必须输出“现有主动测量数据不足以确认根因”，而不是继续无限调用工具。
+如果四轮后仍然无法归因，必须输出“现有主动测量数据不足以确认根因”，而不是继续无限调用工具。
 
 ## 8. Query Catalog：预定义 SQL 的核心设计
 
@@ -623,7 +622,6 @@ Verifier
 
 Planner Round 2
   ping.by_asn
-  ping.by_prefix24
 
 Executor
   发现异常主要集中在 AS4134 和 Prefix X
@@ -634,8 +632,10 @@ Verifier
   返回 NEED_MORE_EVIDENCE
 
 Planner Round 3
-  trace.path_change
-  knowledge.search
+  ping.by_prefix24
+
+Planner Round 4
+  trace.paths
 
 Verifier
   检查数值、时间、路径和知识证据
