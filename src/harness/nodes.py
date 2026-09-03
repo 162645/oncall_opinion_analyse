@@ -197,7 +197,8 @@ async def understand(state: Dict[str, Any]) -> Dict[str, Any]:
             "metric": "p95" if "p95" in query.lower() else ("p99" if "p99" in query.lower() else "rtt"),
             "goal": "diagnose" if any(w in query.lower() for w in ("异常", "原因", "为什么", "故障")) else "describe",
             "planning_mode": "long_tail" if complexity_signals >= 2 else "recipe",
-            "needs_baseline": any(word in query.lower() for word in ("变差", "恶化", "相比", "之前", "历史", "baseline", "compare"))}
+            "needs_baseline": any(word in query.lower() for word in ("变差", "恶化", "相比", "之前", "历史", "baseline", "compare")),
+            "wants_path_analysis": any(word in query.lower() for word in ("路径", "路由", "traceroute", "trace", "path"))}
     low_confidence = not task["region"] or (task["kind"] == "network_analysis" and complexity_signals >= 2)
     if low_confidence and os.getenv("HARNESS_UNDERSTAND_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true":
         enriched = await _llm_task_spec(state, task)
@@ -295,6 +296,8 @@ def _steps(task: Dict[str, Any], execution: Dict[str, Any], verification: Dict[s
     concentrated, asn_rows = _asn_concentration(ledger)
     if concentrated and not ledger.has("ping.by_prefix24"):
         return [{"query_id": "ping.by_prefix24", "params": {"query_type": "ping_stats", "asn": _top_asn(ledger), **base}}]
+    if task.get("wants_path_analysis") and not ledger.has("trace.path_change"):
+        return [{"query_id": "trace.path_change", "params": {"query_type": "trace_path_change", **base}}]
     if ledger.has("ping.by_prefix24") and not ledger.has("trace.paths"):
         return [{"query_id": "trace.paths", "params": {"query_type": "trace_stats", "prefix24": _top_prefix(ledger), **base}}]
     return []

@@ -24,6 +24,7 @@ class TaskSpec(HarnessModel):
     metric: Literal["rtt", "p95", "p99"] = "rtt"
     planning_mode: Literal["recipe", "long_tail"] = "recipe"
     needs_baseline: bool = False
+    wants_path_analysis: bool = False
     time_range: TimeRange
 
 

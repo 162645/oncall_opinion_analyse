@@ -63,7 +63,13 @@ def main():
         region=regions[i%len(regions)]; lo,hi=c.execute(f"SELECT min(measure_time),max(measure_time) FROM {region}__ping")[0]
         if lo.tzinfo is None: lo,hi=lo.replace(tzinfo=timezone.utc),hi.replace(tzinfo=timezone.utc)
         span=max(3600,int((hi-lo).total_seconds())); width=min(24*3600,span); start=lo+timedelta(seconds=(span-width)*i/max(1,args.count-3)); end=start+timedelta(seconds=width)
-        fixture=fetch(c,region,start,end); typ,_,allowed=classify(fixture); required=contract(typ,allowed); cid=f"N{i+1:03d}"
+        fixture=fetch(c,region,start,end); typ,_,allowed=classify(fixture); required=contract(typ,allowed)
+        allowed=set(allowed)
+        if "ping.trend" in required: allowed.add("p95_spike_detected")
+        if "ping.by_asn" in required: allowed.add("asn_concentration")
+        if "ping.by_prefix24" in required: allowed.add("prefix24_candidates")
+        if "trace.path_change" in required: allowed.update({"traceroute_paths_observed","rtt_path_time_correlation"})
+        allowed=sorted(allowed); cid=f"N{i+1:03d}"
         (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps({k:fixture[k] for k in required},ensure_ascii=False,indent=2)+"\n")
         cases.append({"case_id":cid,"query":f"{region}：请{wording(typ)}，时间范围 {start.isoformat()} 至 {end.isoformat()}","fixture_path":f"fixtures/{cid}.json","required_queries":list(required),"expected_verdict":"PARTIAL" if typ in {"path_correlation","path_without_rtt"} else ("PASS" if required else "ABSTAIN"),"allowed_facts":allowed,"forbidden_facts":["path_change_caused_rtt"],"case_type":"real_data_replay"}); counts[typ]=counts.get(typ,0)+1
     for j in range(2):
