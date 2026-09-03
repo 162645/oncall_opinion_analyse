@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 import json
+import asyncio
 from typing import Any, Awaitable, Callable, Dict
 
 from src.eval.replay_runtime import ReplayRuntime
@@ -81,7 +82,14 @@ async def run_react_replay(case: Dict[str, Any], fixture: Dict[str, Any], *, max
     started = time.perf_counter()
     for _ in range(max_tool_calls):
         llm_started = time.perf_counter()
-        decision = await policy(case["query"], observations, catalog)
+        try:
+            decision = await asyncio.wait_for(policy(case["query"], observations, catalog), timeout=12.0)
+        except asyncio.TimeoutError:
+            invalid_calls += 1
+            observations.append({"query_id": "__policy_timeout__", "status": "invalid"})
+            llm_calls.append({"latency_ms": 12000.0, "input_observation_count": len(observations) - 1,
+                              "timeout": True})
+            continue
         llm_calls.append({"latency_ms": round((time.perf_counter() - llm_started) * 1000, 3),
                           "input_observation_count": len(observations)})
         if decision.get("invalid_decision"):
