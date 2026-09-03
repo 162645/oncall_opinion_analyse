@@ -82,7 +82,9 @@ class TrendRow(BaseModel):
 
 
 class ASNRow(BaseModel):
-    ip_asn: int
+    # Unresolved ASN is a valid measurement outcome (for example private or
+    # incomplete attribution), not a malformed row.
+    ip_asn: int | None = None
     total_samples: int
     valid_samples: int
     mean_rtt: float | None = None
@@ -90,7 +92,7 @@ class ASNRow(BaseModel):
 
 
 class PrefixRow(BaseModel):
-    prefix24: str
+    prefix24: str | None = None
     total_samples: int
     valid_samples: int
     mean_rtt: float | None = None
