@@ -12,7 +12,6 @@ from src.runtime import CheckpointConfig, CheckpointerFactory
 from .nodes import _catalog_runtime, context, executor_with_runtime, planner, synthesizer, understand, verifier
 from .state import HarnessState, create_initial_state
 
-
 @dataclass
 class HarnessExecutionResult:
     success: bool
