@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+try:
+    # Optional in the 2 GB demo profile.  Redis persistence remains available
+    # when the extra package is installed, while memory checkpoints keep the
+    # core harness importable and runnable without Redis.
+    from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+except ImportError:  # pragma: no cover - exercised by the slim deployment
+    AsyncRedisSaver = None  # type: ignore[assignment,misc]
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,11 @@ class CheckpointerFactory:
         if config.backend == "memory":
             return InMemorySaver()
         if config.backend == "redis":
+            if AsyncRedisSaver is None:
+                raise RuntimeError(
+                    "Redis checkpoint backend requires the optional "
+                    "langgraph-checkpoint-redis package"
+                )
             return AsyncRedisSaver(
                 redis_url=config.redis_url,
                 checkpoint_prefix=f"{config.prefix}:checkpoint",
@@ -74,4 +85,3 @@ class RedisExecutionLedger:
     async def put(self, idempotency_key: str, value: dict, ttl_seconds: int = 86400):
         payload = json.dumps(value, ensure_ascii=False, default=str)
         await self.redis.set(self._key(idempotency_key), payload, ex=ttl_seconds)
-
