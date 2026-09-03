@@ -30,6 +30,7 @@ def load_cases(path: Path) -> list[NetworkEvalCase]:
         allowed_facts=tuple(row.get("allowed_facts", [])),
         forbidden_facts=tuple(row.get("forbidden_facts", [])),
         case_type=row.get("case_type", "real_data_replay"),
+        expected_facts=tuple(row.get("expected_facts", row.get("allowed_facts", []))),
     ) for row in rows]
 
 
@@ -42,14 +43,34 @@ async def run(cases: list[NetworkEvalCase], fixture_dir: Path, case_rows: list[d
         react = await run_react_replay({"case_id": case.case_id, "query": case.query}, fixture)
         h, r = score_case(case, replay["state"]), score_case(case, react["state"])
         harness_results.append(h); react_results.append(r)
-        raw.append({"case_id": case.case_id, "case_type": case.case_type, "harness": h,
+        raw.append({"case_id": case.case_id, "case_type": case.case_type, "expected_verdict": case.expected_verdict,
+                    "harness": h,
                     "react": r, "harness_calls": replay["calls"], "react_calls": react["calls"],
                     "react_llm_calls": react["llm_calls"], "react_strategy": react["strategy"]})
     def operational(rows: list[dict[str, Any]], key: str) -> dict[str, float]:
         values = [len(x[key]) for x in raw]
         return {"average_tool_calls": sum(values) / len(values), "p95_tool_calls": sorted(values)[max(0, int(len(values) * .95) - 1)]}
-    return {"summary": {"harness": {**evaluate_cases(harness_results), **operational(harness_results, "harness_calls")},
-                         "free_react": {**evaluate_cases(react_results), **operational(react_results, "react_calls")}}, "cases": raw}
+    def diagnostics(strategy: str) -> dict[str, Any]:
+        rows = [x[strategy] for x in raw]
+        confusion: dict[str, dict[str, int]] = {}
+        by_type: dict[str, list[dict[str, Any]]] = {}
+        missing: dict[str, int] = {}
+        for item in raw:
+            actual = item[strategy].get("actual_verdict", item[strategy].get("verdict", "unknown"))
+            expected = item["expected_verdict"]
+            confusion.setdefault(expected, {})[actual] = confusion.setdefault(expected, {}).get(actual, 0) + 1
+            by_type.setdefault(item["case_type"], []).append(item[strategy])
+            for query_id in item[strategy].get("missing_required_queries", []):
+                missing[query_id] = missing.get(query_id, 0) + 1
+        return {"verdict_confusion_matrix": confusion,
+                "by_case_type": {name: evaluate_cases(values) for name, values in by_type.items()},
+                "missing_evidence_clusters": dict(sorted(missing.items(), key=lambda x: (-x[1], x[0])))}
+    for item in raw:
+        item["harness"]["actual_verdict"] = item["harness"].get("verdict")
+        item["react"]["actual_verdict"] = item["react"].get("verdict")
+    harness_summary = {**evaluate_cases(harness_results), **operational(harness_results, "harness_calls"), **diagnostics("harness")}
+    react_summary = {**evaluate_cases(react_results), **operational(react_results, "react_calls"), **diagnostics("react")}
+    return {"summary": {"harness": harness_summary, "free_react": react_summary}, "cases": raw}
 
 
 def main() -> None:

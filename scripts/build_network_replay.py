@@ -67,9 +67,8 @@ def main():
         region=regions[i%len(regions)]; lo,hi=c.execute(f"SELECT min(measure_time),max(measure_time) FROM {region}__ping")[0]
         if lo.tzinfo is None: lo,hi=lo.replace(tzinfo=timezone.utc),hi.replace(tzinfo=timezone.utc)
         span=max(3600,int((hi-lo).total_seconds())); width=min(24*3600,span); start=lo+timedelta(seconds=(span-width)*i/max(1,args.count-3)); end=start+timedelta(seconds=width)
-        fixture=fetch(c,region,start,end); typ,_,allowed=classify(fixture)
+        fixture=fetch(c,region,start,end); typ,_,raw_facts=classify(fixture); allowed=set(raw_facts)
         required=tuple(q for q in contract(typ,allowed) if available(fixture,q))
-        allowed=set(allowed)
         if "ping.trend" in required: allowed.add("p95_spike_detected")
         if "ping.by_asn" in required: allowed.add("asn_concentration")
         if "ping.by_prefix24" in required: allowed.add("prefix24_candidates")
@@ -77,7 +76,7 @@ def main():
         allowed=sorted(allowed); cid=f"N{i+1:03d}"
         (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps({k:fixture[k] for k in required},ensure_ascii=False,indent=2)+"\n")
         verdict="PARTIAL" if typ in {"path_correlation","path_without_rtt"} and required else ("PASS" if required else "ABSTAIN")
-        cases.append({"case_id":cid,"query":f"{region}：请{wording(typ)}，时间范围 {start.isoformat()} 至 {end.isoformat()}","fixture_path":f"fixtures/{cid}.json","required_queries":list(required),"expected_verdict":verdict,"allowed_facts":allowed,"forbidden_facts":["path_change_caused_rtt"],"case_type":"real_data_replay"}); counts[typ]=counts.get(typ,0)+1
+        cases.append({"case_id":cid,"query":f"{region}：请{wording(typ)}，时间范围 {start.isoformat()} 至 {end.isoformat()}","fixture_path":f"fixtures/{cid}.json","required_queries":list(required),"expected_verdict":verdict,"allowed_facts":allowed,"expected_facts":sorted(raw_facts),"forbidden_facts":["path_change_caused_rtt"],"case_type":"real_data_replay"}); counts[typ]=counts.get(typ,0)+1
     for j in range(2):
         base=cases[j]; cid=f"N{args.count-1+j:03d}"; fixture=json.loads((args.output/"fixtures"/f"{base['case_id']}.json").read_text()); fixture["ping.trend"]={"__error__":"controlled transient failure","error_kind":"transient"}; (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps(fixture,ensure_ascii=False,indent=2)+"\n")
         cases.append({**base,"case_id":cid,"fixture_path":f"fixtures/{cid}.json","expected_verdict":"PARTIAL","case_type":"fault_injection"}); counts["fault_injection"]=counts.get("fault_injection",0)+1

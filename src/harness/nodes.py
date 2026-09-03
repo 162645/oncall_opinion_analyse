@@ -414,7 +414,7 @@ async def planner(state: Dict[str, Any]) -> Dict[str, Any]:
     # Long-tail planning is optional and guarded: the model may choose only
     # catalog primitives. If it fails validation or is unavailable, the
     # deterministic recipe remains the safe fallback.
-    if not verification.get("missing_evidence") and task.get("planning_mode") == "long_tail" \
+    if not verification.get("missing_evidence") and (task.get("planning_mode") == "long_tail" or os.getenv("HARNESS_PLANNER_MODE", "hybrid") == "llm") \
             and os.getenv("HARNESS_PLANNER_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true":
         llm_steps = await _llm_plan(state)
         if llm_steps:

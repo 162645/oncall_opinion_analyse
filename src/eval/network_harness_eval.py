@@ -19,6 +19,7 @@ class NetworkEvalCase:
     allowed_facts: tuple[str, ...] = ()
     forbidden_facts: tuple[str, ...] = ()
     case_type: str = "real_data_replay"
+    expected_facts: tuple[str, ...] = ()
 
 
 DEFAULT_CASES = (
@@ -64,8 +65,11 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
     # ids are necessary but not sufficient: a causal fact cannot be smuggled
     # in merely because some unrelated observation exists.
     unsupported = 0
+    actual_facts = set()
     for claim in claims:
         fact = claim.get("fact") or claim.get("fact_type")
+        if fact:
+            actual_facts.add(fact)
         bound = set(claim.get("evidence_ids", []))
         supporting_queries = set(claim.get("supporting_query_ids", []))
         fact_ok = not allowed or (fact in allowed and fact not in forbidden)
@@ -75,10 +79,16 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
     cross_status = verification.get("checks", {}).get("cross_evidence", {}).get("status")
     return {
         "case_id": case.case_id,
+        "verdict": verification.get("verdict", "unknown"),
         "task_spec_accuracy": task.get("kind") == "network_analysis",
         "query_selection_accuracy": selected,
         "evidence_coverage": len(expected & evidence_queries) / len(expected) if expected else float(not evidence_queries),
         "unsupported_claim_rate": unsupported / len(claims) if claims else 0.0,
+        "claim_count": len(claims),
+        "claim_presence": bool(claims),
+        "claim_recall": (len(actual_facts & set(case.expected_facts)) / len(case.expected_facts)
+                         if case.expected_facts else float(bool(claims))),
+        "missing_required_queries": sorted(expected - evidence_queries),
         "correct_abstain": verification.get("verdict") == case.expected_verdict,
         "cross_status_match": case.expected_cross_status is None or cross_status == case.expected_cross_status,
         "rounds": state.get("round", 0),
@@ -101,6 +111,8 @@ def evaluate_cases(results: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "cross_evidence_accuracy": average("cross_status_match"),
         "average_rounds": average("rounds"),
         "average_query_count": average("query_count"),
+        "claim_presence_rate": average("claim_presence"),
+        "claim_recall": average("claim_recall"),
     }
 
 
