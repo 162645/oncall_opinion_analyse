@@ -134,6 +134,16 @@ def _region(query: str) -> str | None:
 
 
 def _time_range(query: str) -> Dict[str, str]:
+    explicit = re.findall(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})", query)
+    if len(explicit) >= 2:
+        start_time, end_time = explicit[:2]
+        try:
+            start = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+            return {"start_time": start.isoformat(), "end_time": end.isoformat(),
+                    "hours": max(1, int((end - start).total_seconds() / 3600))}
+        except ValueError:
+            pass
     hours = 24
     match = re.search(r"最近\s*(\d+)\s*(小时|天)|last\s*(\d+)\s*(hours?|days?)", query, re.I)
     if match:
