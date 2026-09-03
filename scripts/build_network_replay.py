@@ -40,6 +40,21 @@ def classify(fixture):
     if peak > p95*1.2: return "normal_trend", ("ping.summary","ping.trend"), ["p95_spike_detected"]
     return "normal_summary", ("ping.summary",), []
 
+def contract(case_type, facts):
+    """Declare only evidence that the measured facts make relevant."""
+    if case_type == "baseline": return ("ping.summary", "ping.trend", "ping.compare_window")
+    if case_type == "asn_concentrated": return ("ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24", "trace.paths")
+    if case_type == "null_attribution": return ("ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24")
+    if case_type in {"path_correlation", "path_without_rtt"}: return ("ping.summary", "ping.trend", "trace.path_change")
+    if case_type == "normal_trend": return ("ping.summary", "ping.trend")
+    return ("ping.summary",)
+
+def wording(case_type):
+    return {"baseline":"诊断当前 RTT 与历史窗口是否恶化", "asn_concentrated":"诊断延迟异常并定位 ASN 与 Prefix",
+            "null_attribution":"诊断异常并检查未解析 ASN 或 Prefix", "path_correlation":"诊断 RTT 异常与路径变化是否时间相关",
+            "path_without_rtt":"检查路径变化但不要推断 RTT 因果", "normal_trend":"分析 P95 RTT 趋势是否异常",
+            "normal_summary":"描述 RTT 测量概况"}.get(case_type, "分析网络质量")
+
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--output",type=Path,default=Path("eval_data/network")); ap.add_argument("--count",type=int,default=50); args=ap.parse_args()
     c=Client(host=os.environ["CLICKHOUSE_HOST"],port=int(os.environ.get("CLICKHOUSE_PORT",9000)),database=os.environ["CLICKHOUSE_DATABASE"],user=os.environ["CLICKHOUSE_USER"],password=os.environ["CLICKHOUSE_PASSWORD"])
@@ -48,9 +63,9 @@ def main():
         region=regions[i%len(regions)]; lo,hi=c.execute(f"SELECT min(measure_time),max(measure_time) FROM {region}__ping")[0]
         if lo.tzinfo is None: lo,hi=lo.replace(tzinfo=timezone.utc),hi.replace(tzinfo=timezone.utc)
         span=max(3600,int((hi-lo).total_seconds())); width=min(24*3600,span); start=lo+timedelta(seconds=(span-width)*i/max(1,args.count-3)); end=start+timedelta(seconds=width)
-        fixture=fetch(c,region,start,end); typ,required,allowed=classify(fixture); cid=f"N{i+1:03d}"
+        fixture=fetch(c,region,start,end); typ,_,allowed=classify(fixture); required=contract(typ,allowed); cid=f"N{i+1:03d}"
         (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps({k:fixture[k] for k in required},ensure_ascii=False,indent=2)+"\n")
-        cases.append({"case_id":cid,"query":f"分析 {region} {typ} 网络质量，时间范围 {start.isoformat()} 至 {end.isoformat()}","fixture_path":f"fixtures/{cid}.json","required_queries":list(required),"expected_verdict":"PASS" if required else "ABSTAIN","allowed_facts":allowed,"forbidden_facts":["path_change_caused_rtt"],"case_type":"real_data_replay"}); counts[typ]=counts.get(typ,0)+1
+        cases.append({"case_id":cid,"query":f"请{wording(typ)}：{region}，时间范围 {start.isoformat()} 至 {end.isoformat()}","fixture_path":f"fixtures/{cid}.json","required_queries":list(required),"expected_verdict":"PARTIAL" if typ in {"path_correlation","path_without_rtt"} else ("PASS" if required else "ABSTAIN"),"allowed_facts":allowed,"forbidden_facts":["path_change_caused_rtt"],"case_type":"real_data_replay"}); counts[typ]=counts.get(typ,0)+1
     for j in range(2):
         base=cases[j]; cid=f"N{args.count-1+j:03d}"; fixture=json.loads((args.output/"fixtures"/f"{base['case_id']}.json").read_text()); fixture["ping.trend"]={"__error__":"controlled transient failure","error_kind":"transient"}; (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps(fixture,ensure_ascii=False,indent=2)+"\n")
         cases.append({**base,"case_id":cid,"fixture_path":f"fixtures/{cid}.json","expected_verdict":"PARTIAL","case_type":"fault_injection"}); counts["fault_injection"]=counts.get("fault_injection",0)+1
