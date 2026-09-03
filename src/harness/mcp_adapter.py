@@ -9,6 +9,23 @@ from typing import Any, Dict
 from .catalog import CATALOG
 
 
+class ExternalMCPAdapter:
+    """Adapter for real MCP servers, separate from the local SQL capability."""
+    def __init__(self, client):
+        self.client = client
+
+    async def initialize(self):
+        await self.client.initialize()
+
+    def list_tools(self):
+        return self.client.list_tools()
+
+    async def call_tool(self, name, arguments, *, trace_id=""):
+        # MCP transports carry tool arguments; trace correlation remains a
+        # Harness concern and must not leak into a remote tool schema.
+        return await self.client.call_tool(name, **arguments)
+
+
 class CatalogMCPAdapter:
     def __init__(self, runtime):
         self.runtime = runtime

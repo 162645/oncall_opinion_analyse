@@ -139,6 +139,11 @@ class QuerySpec:
     columns: Tuple[str, ...]
     input_model: Type[QueryInput]
     output_model: Type[BaseModel]
+    version: str = "1.0"
+    evidence_type: str = "measurement"
+    cost_class: str = "low"
+    cache_ttl_seconds: int = 0
+    max_window_hours: int = 168
 
 
 CATALOG: Dict[str, QuerySpec] = {
@@ -162,7 +167,9 @@ def get_query_spec(query_id: str) -> QuerySpec:
 
 
 def catalog_description() -> Tuple[dict, ...]:
-    return tuple({"query_id": item.query_id, "description": item.description, "tool_query_type": item.tool_query_type}
+    return tuple({"query_id": item.query_id, "description": item.description, "tool_query_type": item.tool_query_type,
+                  "version": item.version, "evidence_type": item.evidence_type, "cost_class": item.cost_class,
+                  "cache_ttl_seconds": item.cache_ttl_seconds, "max_window_hours": item.max_window_hours}
                  for item in CATALOG.values())
 
 

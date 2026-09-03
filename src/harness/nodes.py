@@ -320,6 +320,12 @@ def _extract_json_object(content: str) -> Any:
             return None
 
 
+def _renderer_grounded(source: str, rendered: str) -> bool:
+    """Preserve every numeric/entity token from a verified claim at runtime."""
+    tokens = re.findall(r"\d+(?:\.\d+)?|AS\d+|\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}|[A-Z]{2,}", source)
+    return all(token in rendered for token in tokens)
+
+
 async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Ask an LLM for a plan, then accept only catalog-valid primitives."""
     try:
@@ -622,8 +628,10 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
             llm_result = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=10.0)
             rendered = _extract_json_object(llm_result.content)
             allowed = {claim["claim_id"] for claim in claims}
-            if isinstance(rendered, list) and {item.get("claim_id") for item in rendered} == allowed \
-                    and all(isinstance(item.get("text"), str) and item["text"].strip() for item in rendered):
+            if (isinstance(rendered, list) and {item.get("claim_id") for item in rendered} == allowed
+                    and all(isinstance(item.get("text"), str) and item["text"].strip() for item in rendered)
+                    and all(_renderer_grounded(next(claim["claim"] for claim in claims if claim["claim_id"] == item["claim_id"]), item["text"])
+                            for item in rendered)):
                 by_id = {item["claim_id"]: item["text"].strip() for item in rendered}
                 answer = "\n".join(f"[{claim['claim_id']}] {by_id[claim['claim_id']]}" for claim in claims)
                 generated_by = "llm_claim_renderer"

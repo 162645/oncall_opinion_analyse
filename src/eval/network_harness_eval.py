@@ -27,6 +27,24 @@ DEFAULT_CASES = (
 )
 
 
+# Expand the seed cases into a 35-case deterministic regression matrix.
+_CASE_FAMILIES = (
+    ("spike", "P95 RTT 突增", ("ping.summary", "ping.trend"), "PASS"),
+    ("baseline", "相比历史窗口是否变差", ("ping.compare_window",), "PASS"),
+    ("asn", "异常是否集中在 ASN", ("ping.by_asn",), "PARTIAL"),
+    ("prefix", "定位异常 Prefix24", ("ping.by_prefix24",), "PARTIAL"),
+    ("paths", "查看 Traceroute 路径", ("trace.paths",), "PASS"),
+    ("abstain", "ClickHouse 无法连接时分析", (), "ABSTAIN"),
+    ("correlation", "路径切换与 RTT 是否相关", ("trace.path_change",), "PASS"),
+)
+DEFAULT_CASES = DEFAULT_CASES + tuple(
+    NetworkEvalCase(f"E{index:02d}", f"US {label} case {index}", queries, verdict,
+                    "correlated" if family == "correlation" else None)
+    for index in range(6, 36)
+    for family, label, queries, verdict in (_CASE_FAMILIES[(index - 6) % len(_CASE_FAMILIES)],)
+)
+
+
 def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
     task = state.get("task", {})
     plan_queries = {step.get("query_id") for step in state.get("plan", {}).get("steps", [])}
@@ -68,3 +86,8 @@ def evaluate_cases(results: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "average_rounds": average("rounds"),
         "average_query_count": average("query_count"),
     }
+
+
+def compare_strategies(results_by_strategy: Dict[str, Iterable[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+    """Return one comparable metric row for Harness, Text-to-SQL, or ReAct."""
+    return {name: evaluate_cases(rows) for name, rows in results_by_strategy.items()}
