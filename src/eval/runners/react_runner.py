@@ -13,7 +13,7 @@ Policy = Callable[[str, list[dict[str, Any]], list[dict[str, Any]]], Awaitable[d
 
 def _params(query: str, query_id: str) -> dict[str, Any]:
     regions = re.findall(r"\b[A-Z][A-Z0-9_]{2,31}\b", query)
-    region = next((x for x in regions if x in {"UKRAINE", "US", "CN", "JP", "DE"}), "UKRAINE")
+    region = regions[0] if regions else "UKRAINE"
     dates = re.findall(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})", query)
     start_time, end_time = (dates + ["2025-01-08T14:54:10+00:00", "2025-01-09T14:54:10+00:00"])[:2]
     base: dict[str, Any] = {"query_type": CATALOG[query_id].tool_query_type,
