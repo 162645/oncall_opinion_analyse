@@ -29,6 +29,24 @@ async def test_baseline_intent_survives_task_contract():
 
 
 @pytest.mark.asyncio
+async def test_understand_llm_enriches_semantics_without_breaking_contract(monkeypatch):
+    class FakeGateway:
+        async def generate(self, _prompt):
+            return type("Response", (), {"content": '{"kind":"network_analysis","goal":"diagnose",'
+                    '"region":"UKRAINE","metric":"p95","planning_mode":"long_tail",'
+                    '"time_range":{"start_time":"2026-01-01T00:00:00+00:00","end_time":"2026-01-02T00:00:00+00:00"},'
+                    '"analysis_dimensions":["time","path"],"semantic_requirements":["compare_day_night"],'
+                    '"semantic_confidence":0.91}'})()
+
+    monkeypatch.setenv("HARNESS_UNDERSTAND_ENABLED", "true")
+    monkeypatch.setattr("src.llm.get_llm_gateway", lambda: FakeGateway())
+    update = await understand({"query": "UKRAINE 比较白天和凌晨的路径变化与 P95 延迟", "trace": []})
+    assert update["task"]["planning_mode"] == "long_tail"
+    assert update["task"]["analysis_dimensions"] == ["time", "path"]
+    assert update["task"]["semantic_requirements"] == ["compare_day_night"]
+
+
+@pytest.mark.asyncio
 async def test_planner_only_emits_catalog_query_ids():
     state = {
         "task": {"kind": "network_analysis", "region": "UKRAINE", "goal": "diagnose",
