@@ -165,7 +165,9 @@ async def _llm_task_spec(state: Dict[str, Any], draft: Dict[str, Any]) -> Dict[s
             "不要生成 SQL，不要添加字段。若无法确定则保留规则草稿字段。"
             f"\n用户问题：{state['query']}\n规则草稿：{json.dumps(draft, ensure_ascii=False)}"
         )
-        response = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=5.0)
+        from src.llm import LLMConfig
+        response = await asyncio.wait_for(get_llm_gateway().generate(prompt, config=LLMConfig(
+            temperature=float(os.getenv("HARNESS_LLM_TEMPERATURE", "0")), max_tokens=1024)), timeout=5.0)
         candidate = _extract_json_object(response.content)
         if not isinstance(candidate, dict):
             return None
@@ -367,7 +369,9 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             f"\nEvidence={json.dumps(evidence, ensure_ascii=False, default=str)[:8000]}"
             "\n请选择当前最有价值且尚未成功执行的查询。"
         )
-        response = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=5.0)
+        from src.llm import LLMConfig
+        response = await asyncio.wait_for(get_llm_gateway().generate(prompt, config=LLMConfig(
+            temperature=float(os.getenv("HARNESS_LLM_TEMPERATURE", "0")), max_tokens=1024)), timeout=5.0)
         proposed = _extract_json_object(response.content)
         if not isinstance(proposed, list):
             return []

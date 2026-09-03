@@ -62,10 +62,13 @@ async def llm_policy(query: str, observations: list[dict[str, Any]], catalog: li
 
 
 async def run_react_replay(case: Dict[str, Any], fixture: Dict[str, Any], *, max_tool_calls: int = 8,
-                           llm_policy: Policy | None = None) -> Dict[str, Any]:
+                           model_policy: Policy | None = None) -> Dict[str, Any]:
     """Run Free ReAct with only query, catalog and accumulated observations."""
     runtime = ReplayRuntime(fixture)
-    policy = llm_policy or deterministic_policy
+    if model_policy is None:
+        import os
+        model_policy = llm_policy if os.getenv("HARNESS_REACT_LLM_ENABLED", "false").lower() == "true" else None
+    policy = model_policy or deterministic_policy
     catalog = [{"query_id": s.query_id, "description": s.description,
                 "input_schema": s.input_model.model_json_schema()} for s in CATALOG.values()]
     observations: list[dict[str, Any]] = []
@@ -100,4 +103,4 @@ async def run_react_replay(case: Dict[str, Any], fixture: Dict[str, Any], *, max
              "verification": {"verdict": "PASS" if evidence else "ABSTAIN"}}
     return {"calls": runtime.calls, "llm_calls": llm_calls, "invalid_tool_calls": invalid_calls,
             "latency_ms": round((time.perf_counter() - started) * 1000, 3), "state": state,
-            "strategy": "free_react_deterministic" if llm_policy is None else "free_react_llm"}
+            "strategy": "free_react_llm" if model_policy is not None else "free_react_deterministic"}
