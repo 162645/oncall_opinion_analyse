@@ -7,6 +7,7 @@ SELECT prefix24,
 FROM {region}__ping
 WHERE measure_time >= %(start_time)s
   AND measure_time < %(end_time)s
+  AND (%(asn)s = 0 OR ip_asn = %(asn)s)
 GROUP BY prefix24
-ORDER BY valid_samples DESC
+ORDER BY p95_rtt DESC, valid_samples DESC
 LIMIT %(limit)s

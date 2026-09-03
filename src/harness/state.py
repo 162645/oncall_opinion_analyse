@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Dict, List, Optional, TypedDict
 
 
@@ -19,9 +20,11 @@ class HarnessState(TypedDict, total=False):
     max_rounds: int
     next_node: str
     error: Optional[str]
+    budget: Dict[str, Any]
 
 
 def create_initial_state(query: str, session_id: str, run_id: str, metadata: Optional[Dict[str, Any]] = None) -> HarnessState:
+    options = metadata or {}
     return {
         "query": query,
         "session_id": session_id,
@@ -39,4 +42,8 @@ def create_initial_state(query: str, session_id: str, run_id: str, metadata: Opt
         "max_rounds": int((metadata or {}).get("max_rounds", os.getenv("AGENT_MAX_ROUNDS", "4"))),
         "next_node": "understand",
         "error": None,
+        "budget": {"max_queries": int(options.get("max_queries", os.getenv("AGENT_MAX_QUERIES", "8"))),
+                   "max_tool_failures": int(options.get("max_tool_failures", os.getenv("AGENT_MAX_TOOL_FAILURES", "3"))),
+                   "deadline_seconds": float(options.get("deadline_seconds", os.getenv("AGENT_DEADLINE_SECONDS", "45"))),
+                   "started_at": time.time()},
     }

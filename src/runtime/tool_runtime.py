@@ -205,9 +205,16 @@ class ToolRuntime:
         while attempts < tool.retry.max_attempts:
             attempts += 1
             try:
-                value = tool.handler(**arguments)
-                if inspect.isawaitable(value):
-                    value = await asyncio.wait_for(value, timeout=timeout)
+                if inspect.iscoroutinefunction(tool.handler):
+                    value = await asyncio.wait_for(tool.handler(**arguments), timeout=timeout)
+                else:
+                    # Synchronous handlers (for example ClickHouse drivers)
+                    # must use the same Runtime timeout boundary as async ones.
+                    value = await asyncio.wait_for(
+                        asyncio.to_thread(tool.handler, **arguments), timeout=timeout
+                    )
+                    if inspect.isawaitable(value):
+                        value = await asyncio.wait_for(value, timeout=timeout)
                 if len(repr(value).encode("utf-8")) > self.output_limit_bytes:
                     raise ValueError("tool output exceeds configured size limit")
                 breaker.success()

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 import pytest
 
@@ -132,6 +133,20 @@ async def test_tool_runtime_validation_retry_permission_idempotency_and_circuit(
     assert runtime._breakers["permanent"].failures == 0
     timed_out = await runtime.execute("slow", {})
     assert timed_out.error_kind == ToolErrorKind.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_sync_handler_timeout_is_classified_by_runtime():
+    def blocking():
+        time.sleep(0.05)
+        return "late"
+
+    runtime = ToolRuntime()
+    runtime.register(ToolDefinition(
+        "blocking", "blocking", {"type": "object", "properties": {}, "additionalProperties": False},
+        blocking, timeout_seconds=0.001, retry=RetryPolicy(max_attempts=1)))
+    result = await runtime.execute("blocking", {})
+    assert result.error_kind == ToolErrorKind.TIMEOUT
 
 
 @pytest.mark.asyncio

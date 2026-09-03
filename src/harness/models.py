@@ -23,6 +23,7 @@ class TaskSpec(HarnessModel):
     region: Optional[str] = None
     metric: Literal["rtt", "p95", "p99"] = "rtt"
     planning_mode: Literal["recipe", "long_tail"] = "recipe"
+    needs_baseline: bool = False
     time_range: TimeRange
 
 
@@ -51,6 +52,9 @@ class Evidence(HarnessModel):
     params: Dict[str, Any] = Field(default_factory=dict)
     observed_at: Optional[str] = None
     trace_id: str = ""
+    kind: Literal["measurement", "context"] = "measurement"
+    attempts: int = 0
+    attempt: int = 1
 
 
 class Verification(HarnessModel):

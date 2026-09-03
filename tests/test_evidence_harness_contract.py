@@ -23,6 +23,12 @@ async def test_understand_does_not_treat_metric_as_region():
 
 
 @pytest.mark.asyncio
+async def test_baseline_intent_survives_task_contract():
+    update = await understand({"query": "US 最近 24 小时延迟相比之前是否变差", "trace": []})
+    assert update["task"]["needs_baseline"] is True
+
+
+@pytest.mark.asyncio
 async def test_planner_only_emits_catalog_query_ids():
     state = {
         "task": {"kind": "network_analysis", "region": "UKRAINE", "goal": "diagnose",
@@ -84,6 +90,14 @@ def test_catalog_compiler_separates_identifier_and_values():
     assert bindings["start_time"].startswith("2026-01-01")
     with pytest.raises(ValueError):
         compile_sql("ping.summary", {"region": "UKRAINE; DROP TABLE x", "start_time": "a", "end_time": "b"})
+
+
+def test_prefix_query_keeps_anomalous_asn_scope():
+    sql, bindings = compile_sql("ping.by_prefix24", {
+        "region": "UKRAINE", "asn": 64500, "start_time": "2026-01-01T00:00:00+00:00",
+        "end_time": "2026-01-02T00:00:00+00:00"})
+    assert "ip_asn = %(asn)s" in sql
+    assert bindings["asn"] == 64500
 
 
 @pytest.mark.asyncio

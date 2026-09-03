@@ -42,6 +42,7 @@ class PingByASNInput(QueryInput):
 
 class PingByPrefixInput(QueryInput):
     query_type: Literal["ping_stats"] = "ping_stats"
+    asn: int | None = Field(default=None, ge=1)
 
 
 class PingOutliersInput(QueryInput):
@@ -180,7 +181,7 @@ def compile_sql(query_id: str, params: Dict[str, Any]) -> Tuple[str, Dict[str, A
     if "{" in sql or "}" in sql:
         raise ValueError(f"unresolved template placeholder in {query_id}")
     values = {"start_time": normalized["start_time"], "end_time": normalized["end_time"], "limit": normalized["limit"],
-              "prefix24": normalized.get("prefix24") or ""}
+              "prefix24": normalized.get("prefix24") or "", "asn": normalized.get("asn") or 0}
     if query_id == "ping.compare_window":
         from datetime import datetime, timedelta
         start = datetime.fromisoformat(normalized["start_time"].replace("Z", "+00:00"))

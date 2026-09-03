@@ -58,6 +58,14 @@ class EvidenceDrivenHarness:
                         and task.get("kind") == "network_analysis"
                         and bool(plan.get("steps"))
                         and int(state.get("round", 0)) < int(state.get("max_rounds", 4)))
+        budget = state.get("budget", {})
+        evidence = state.get("execution", {}).get("evidence", [])
+        failures = sum(1 for item in evidence if item.get("status") != "observed")
+        started_at = float(budget.get("started_at", time.time()))
+        deadline = float(budget.get("deadline_seconds", 45))
+        should_retry = should_retry and len(evidence) < int(budget.get("max_queries", 8)) \
+            and failures < int(budget.get("max_tool_failures", 3)) \
+            and time.time() - started_at < deadline
         return "planner" if should_retry else "synthesizer"
 
     async def _setup(self):
