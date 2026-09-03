@@ -30,15 +30,15 @@ async def deterministic_policy(query: str, observations: list[dict[str, Any]], c
     used = {item["query_id"] for item in observations}
     if not used:
         choice = "ping.compare_window" if any(x in text for x in ("历史", "相比", "baseline")) else "ping.summary"
-    elif "trend" not in used and any(x in text for x in ("趋势", "异常", "p95", "延迟", "rtt")):
+    elif "ping.trend" not in used and any(x in text for x in ("趋势", "异常", "p95", "延迟", "rtt")):
         choice = "ping.trend"
-    elif "asn" not in used and any(x in text for x in ("asn", "运营商", "集中")):
+    elif "ping.by_asn" not in used and any(x in text for x in ("asn", "运营商", "集中")):
         choice = "ping.by_asn"
-    elif "prefix" not in used and any(x in text for x in ("prefix", "前缀", "下钻")):
+    elif "ping.by_prefix24" not in used and any(x in text for x in ("prefix", "前缀", "下钻")):
         choice = "ping.by_prefix24"
-    elif "path_change" not in used and any(x in text for x in ("路径", "path", "路由")):
+    elif "trace.path_change" not in used and any(x in text for x in ("路径", "path", "路由")):
         choice = "trace.path_change"
-    elif "paths" not in used and any(x in text for x in ("路径", "path", "路由")):
+    elif "trace.paths" not in used and any(x in text for x in ("路径", "path", "路由")):
         choice = "trace.paths"
     else:
         return {"final": True, "claims": [], "answer": "基于当前观测结束分析；未验证的因果关系不作结论。"}
