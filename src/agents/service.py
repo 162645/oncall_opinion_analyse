@@ -28,6 +28,7 @@ from src.agents.llm_agent import (
 from src.knowledge.service import get_knowledge_service
 from src.visualization import AdvancedVisualizationService
 from src.llm import get_llm_gateway, LLMConfig, TaskType
+from src.harness import get_harness
 
 logger = logging.getLogger(__name__)
 
@@ -135,11 +136,10 @@ class AgentService:
     """
 
     def __init__(self):
-        self.orchestrator = AgentOrchestrator()
-        self.viz_service = AdvancedVisualizationService()
-
-        # 注册 Agent
-        self._register_agents()
+        # Single execution authority. Legacy handlers below remain only as a
+        # compatibility surface for older imports; process() never dispatches
+        # to them.
+        self.harness = get_harness()
 
     def _register_agents(self):
         """注册所有 Agent"""
@@ -183,8 +183,39 @@ class AgentService:
         Returns:
             AgentServiceResult
         """
-        import time
+        return await self._process_harness(query, mode, session_id, provider, model)
 
+    async def _process_harness(
+        self,
+        query: str,
+        mode: str,
+        session_id: Optional[str],
+        provider: Optional[str],
+        model: Optional[str],
+    ) -> AgentServiceResult:
+        """Compatibility facade over the only production execution path."""
+        started = time.perf_counter()
+        result = await self.harness.execute(
+            query=query,
+            session_id=session_id,
+            metadata={"mode": mode, "provider": provider, "model": model},
+        )
+        chart_data = result.chart_data or {}
+        trace = result.trace or []
+        return AgentServiceResult(
+            success=result.success,
+            message=result.message,
+            intent=result.state.get("task", {}).get("kind", "unknown"),
+            chart_data=chart_data,
+            confidence=result.confidence,
+            trace=trace,
+            token_usage={},
+            total_duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+        # Historical implementation retained below for source compatibility.
+        # It is unreachable from process() and should be removed after clients
+        # stop importing its private handlers.
         trace = []
         start_time = time.time()
 

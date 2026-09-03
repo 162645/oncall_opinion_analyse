@@ -1,6 +1,7 @@
-"""
-LangGraph Agent 编排模块
-使用状态机实现复杂的 Agent 工作流
+"""Legacy LangGraph compatibility package.
+
+Production requests use :mod:`src.harness`; this package remains temporarily
+for checkpoint and migration tests that exercise the previous API.
 """
 
 from .graph_builder import AgentGraphBuilder, AgentState, get_graph_builder
