@@ -83,7 +83,14 @@ async def run(cases: list[NetworkEvalCase], fixture_dir: Path, case_rows: list[d
         item["react"]["actual_verdict"] = item["react"].get("verdict")
     harness_summary = {**evaluate_cases(harness_results), **operational(harness_results, "harness_calls"), **diagnostics("harness")}
     react_summary = {**evaluate_cases(react_results), **operational(react_results, "react_calls"), **diagnostics("react")}
-    return {"summary": {"harness": harness_summary, "free_react": react_summary}, "cases": raw}
+    return {"summary": {"harness": harness_summary, "free_react": react_summary},
+            "evaluation_config": {
+                "baseline": "deepseek_free_react",
+                "react_max_tool_calls": react_max_tool_calls,
+                "ground_truth_hidden_from_baseline": True,
+                "note": "The baseline shares the catalog/tool schemas for capability parity; only the Harness has guarded planning and verification."
+            },
+            "cases": raw}
 
 
 def main() -> None:
@@ -131,7 +138,8 @@ def main() -> None:
               f"| Useful tool rate | {summary['free_react']['useful_tool_rate']:.2%} | {summary['harness']['useful_tool_rate']:.2%} |",
               f"| Evidence coverage / tool call | {summary['free_react']['evidence_coverage_per_tool_call']:.3f} | {summary['harness']['evidence_coverage_per_tool_call']:.3f} |",
               "", "The baseline is a DeepSeek LLM ReAct policy; Harness uses the same DeepSeek gateway with guarded planning and evidence verification.",
-              "Raw per-case results are stored in the JSON report."]
+              "Raw per-case results are stored in the JSON report.",
+              f"Evaluation config: Free ReAct max tool calls = {report['evaluation_config']['react_max_tool_calls']}; no Harness planning/verifier constraints are applied to the baseline."]
         args.output.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print(rendered)
 
