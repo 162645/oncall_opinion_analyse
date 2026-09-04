@@ -37,6 +37,7 @@ class PlanStep(HarnessModel):
     query_id: str
     params: Dict[str, Any] = Field(default_factory=dict)
     purpose: str = "collect evidence"
+    expected_information_gain: Literal["high", "medium", "low"] = "medium"
 
 
 class AnalysisPlan(HarnessModel):

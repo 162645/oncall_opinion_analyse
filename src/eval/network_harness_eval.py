@@ -19,7 +19,7 @@ class NetworkEvalCase:
     allowed_facts: tuple[str, ...] = ()
     forbidden_facts: tuple[str, ...] = ()
     case_type: str = "real_data_replay"
-    expected_facts: tuple[str, ...] = ()
+    expected_facts: tuple[Any, ...] = ()
 
 
 DEFAULT_CASES = (
@@ -66,10 +66,13 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
     # in merely because some unrelated observation exists.
     unsupported = 0
     actual_facts = set()
+    actual_fact_statuses = set()
     for claim in claims:
-        fact = claim.get("fact") or claim.get("fact_type")
+        fact = claim.get("fact_type") or claim.get("fact") or claim.get("fact_type")
+        status = claim.get("status")
         if fact:
             actual_facts.add(fact)
+            actual_fact_statuses.add((fact, status))
         bound = set(claim.get("evidence_ids", []))
         supporting_queries = set(claim.get("supporting_query_ids", []))
         fact_ok = not allowed or (fact in allowed and fact not in forbidden)
@@ -86,14 +89,28 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
         "unsupported_claim_rate": unsupported / len(claims) if claims else 0.0,
         "claim_count": len(claims),
         "claim_presence": bool(claims),
-        "claim_recall": (len(actual_facts & set(case.expected_facts)) / len(case.expected_facts)
-                         if case.expected_facts else float(bool(claims))),
+        "claim_recall": _claim_recall(actual_facts, actual_fact_statuses, case.expected_facts, bool(claims)),
         "missing_required_queries": sorted(expected - evidence_queries),
         "correct_abstain": verification.get("verdict") == case.expected_verdict,
         "cross_status_match": case.expected_cross_status is None or cross_status == case.expected_cross_status,
         "rounds": state.get("round", 0),
         "query_count": len(evidence),
     }
+
+
+def _claim_recall(actual_types: set[str], actual_statuses: set[tuple[str, Any]],
+                  expected: tuple[Any, ...], has_claims: bool) -> float:
+    """Match structured facts while retaining compatibility with old fixtures."""
+    if not expected:
+        return float(has_claims)
+    matched = 0
+    for item in expected:
+        if isinstance(item, dict):
+            key = (item.get("fact_type"), item.get("status"))
+            matched += int(key in actual_statuses)
+        else:
+            matched += int(item in actual_types)
+    return matched / len(expected)
 
 
 def evaluate_cases(results: Iterable[Dict[str, Any]]) -> Dict[str, Any]:

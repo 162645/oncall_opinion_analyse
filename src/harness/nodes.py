@@ -232,14 +232,18 @@ async def understand(state: Dict[str, Any]) -> Dict[str, Any]:
     # LLM is the semantic interpreter for non-trivial requests; the rule draft
     # remains the fallback and Pydantic is the final boundary.
     llm_enabled = os.getenv("HARNESS_UNDERSTAND_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true"
-    low_confidence = not task["region"] or complexity_signals >= 1 or len(task["analysis_dimensions"]) >= 2
+    llm_used = False
+    understand_mode = os.getenv("HARNESS_UNDERSTAND_MODE", "hybrid").lower()
+    low_confidence = (understand_mode == "llm_first" or not task["region"] or complexity_signals >= 1
+                      or len(task["analysis_dimensions"]) >= 2)
     if low_confidence and llm_enabled:
         enriched = await _llm_task_spec(state, task)
         if enriched:
             task = enriched
+            llm_used = True
     # Validate the node boundary before state enters Context.
     task = to_dict(TaskSpec.model_validate(task))
-    return {"task": task, "next_node": "context", "trace": state.get("trace", []) + [_event(state, "understand", started, reasoning="解析意图、地区、时间范围与指标") ]}
+    return {"task": task, "next_node": "context", "trace": state.get("trace", []) + [_event(state, "understand", started, llm_used=llm_used, reasoning="解析意图、地区、时间范围与指标") ]}
 
 
 async def context(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -331,7 +335,7 @@ def _steps(task: Dict[str, Any], execution: Dict[str, Any], verification: Dict[s
         return [{"query_id": "ping.by_prefix24", "params": {"query_type": "ping_stats", "asn": _top_asn(ledger), **base}}]
     if task.get("wants_path_analysis") and not ledger.has("trace.path_change"):
         return [{"query_id": "trace.path_change", "params": {"query_type": "trace_path_change", **base}}]
-    if ledger.has("ping.by_prefix24") and not ledger.has("trace.paths"):
+    if task.get("wants_path_analysis") and ledger.has("ping.by_prefix24") and not ledger.has("trace.paths"):
         return [{"query_id": "trace.paths", "params": {"query_type": "trace_stats", "prefix24": _top_prefix(ledger), **base}}]
     return []
 
@@ -403,8 +407,9 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         context = state.get("context", {})
         evidence = state.get("execution", {}).get("evidence", [])
         prompt = (
-            "你是网络测量分析 Planner。只输出 JSON 数组，不要 Markdown。"
-            "每项必须是 {query_id, params, purpose}，query_id 只能来自 Catalog；禁止 SQL、禁止新增工具。"
+            "你是网络测量分析 Next-Best-Action Planner。只输出 JSON 对象，不要 Markdown。"
+            "格式为 {action: query|finish, queries: [{query_id, reason, expected_information_gain}]}；"
+            "每轮默认只选 1 个 query，只有明确的并行价值才选 2 个。query_id 只能来自候选 Catalog；禁止 SQL、禁止新增工具。"
             f"\nTaskSpec={json.dumps(task, ensure_ascii=False, default=str)}"
             f"\nCatalog={json.dumps(context.get('catalog', []), ensure_ascii=False)}"
             f"\nRecipeHints={json.dumps(context.get('recipe_hints', {}), ensure_ascii=False)}"
@@ -422,15 +427,22 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         except TypeError:
             response = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=5.0)
         proposed = _extract_json_object(response.content)
-        if not isinstance(proposed, list):
+        if isinstance(proposed, list):
+            proposed = {"action": "query", "queries": proposed}
+        if not isinstance(proposed, dict) or proposed.get("action") == "finish":
+            return []
+        proposed_queries = proposed.get("queries")
+        if not isinstance(proposed_queries, list):
             return []
         observed = {item.get("query_id") for item in evidence if item.get("status") == "observed"}
+        candidate_steps = _steps(task, state.get("execution", {}), state.get("verification", {}))
+        candidate_ids = {item.get("query_id") for item in candidate_steps}
         safe = []
-        for item in proposed[:4]:
+        for item in proposed_queries[:2]:
             if not isinstance(item, dict) or item.get("query_id") not in CATALOG:
                 continue
             query_id = item["query_id"]
-            if query_id in observed:
+            if query_id in observed or (candidate_ids and query_id not in candidate_ids):
                 continue
             params = dict(item.get("params") or {})
             params.setdefault("region", task.get("region", ""))
@@ -442,7 +454,11 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             # Compile now as a plan guard; no unchecked plan can reach Executor.
             compile_sql(query_id, params)
             safe.append({"query_id": query_id, "params": params,
-                         "purpose": str(item.get("purpose") or "collect evidence")[:200]})
+                         "purpose": str(item.get("reason") or "collect evidence")[:200],
+                         "expected_information_gain": item.get("expected_information_gain", "medium")
+                         if item.get("expected_information_gain") in {"high", "medium", "low"} else "medium"})
+            if len(safe) == 1:
+                break
         return safe
     except Exception:
         return []
@@ -486,6 +502,7 @@ async def planner(state: Dict[str, Any]) -> Dict[str, Any]:
     verification = state.get("verification", {})
     steps = _steps(task, state.get("execution", {}), verification)
     source, rationale = "recipe", "优先使用经过验证的网络分析配方"
+    llm_used = False
     # Long-tail planning is optional and guarded: the model may choose only
     # catalog primitives. If it fails validation or is unavailable, the
     # deterministic recipe remains the safe fallback.
@@ -496,6 +513,7 @@ async def planner(state: Dict[str, Any]) -> Dict[str, Any]:
         if llm_steps:
             source = "llm_refined" if planner_refinement else "llm_guarded"
             steps, rationale = llm_steps, "LLM 基于语义 TaskSpec、Recipe、Context 与已有证据重排查询，经过 Plan Guard 校验"
+            llm_used = True
     budget = state.get("budget", {})
     used_queries = len(state.get("execution", {}).get("evidence", []))
     remaining_queries = max(0, int(budget.get("max_queries", 8)) - used_queries)
@@ -505,7 +523,7 @@ async def planner(state: Dict[str, Any]) -> Dict[str, Any]:
                         steps=steps, source=source, rationale=rationale)
     return {"round": current_round, "plan": to_dict(plan),
             "next_node": "executor", "trace": state.get("trace", []) + [_event(state, "planner", started,
-            reasoning=f"{rationale}；只输出受控 query_id 与类型化参数") ]}
+            llm_used=llm_used, reasoning=f"{rationale}；只输出受控 query_id 与类型化参数") ]}
 
 
 async def _execute_with_runtime(state: Dict[str, Any], runtime: ToolRuntime) -> Dict[str, Any]:
@@ -575,13 +593,23 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
     coverage_issues = []
     trend = (ledger.observed("ping.trend")[0].get("data") or {}).get("trend_data", []) if ledger.has("ping.trend") else []
     anomaly = False
+    if ledger.has("ping.summary"):
+        summary_item = ledger.observed("ping.summary")[0]
+        summary_rows = (summary_item.get("data") or {}).get("statistics", [])
+        if summary_rows:
+            row = summary_rows[0]
+            facts.append({"fact_type": "rtt_summary", "status": "observed", "fact": "rtt_summary",
+                          "claim": "已观测到 RTT 汇总结果（包含样本量、Median 与 P95）",
+                          "value": {key: row.get(key) for key in ("total_samples", "valid_samples", "median_rtt", "p95_rtt", "p99_rtt")},
+                          "evidence_ids": [summary_item["evidence_id"]]})
     if len(trend) >= 2:
         p95 = [float(row.get("p95_rtt") or 0) for row in trend if row.get("p95_rtt") is not None]
         if p95:
             baseline = sorted(p95)[len(p95) // 2]
             anomaly = max(p95) > baseline * 1.5 if baseline > 0 else False
-            facts.append({"fact": "p95_spike_detected", "claim": "趋势中检测到 P95 RTT 峰值" if anomaly else "趋势中未检测到显著 P95 峰值",
-                          "value": anomaly, "evidence_ids": [ledger.observed("ping.trend")[0]["evidence_id"]]})
+            facts.append({"fact_type": "p95_spike", "status": "present" if anomaly else "absent",
+                          "fact": "p95_spike_detected", "claim": "趋势中检测到 P95 RTT 峰值" if anomaly else "趋势中未检测到显著 P95 峰值",
+                          "value": {"detected": anomaly}, "evidence_ids": [ledger.observed("ping.trend")[0]["evidence_id"]]})
     # Validate basic metric invariants before any claim is emitted.
     for item in successful:
         data = item.get("data") or {}
@@ -605,9 +633,9 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
             if concentrated and not ledger.has("ping.by_prefix24"):
                 coverage_issues.append("AS 内部仍缺少 Prefix24 归因")
                 missing.append({"query_id": "ping.by_prefix24", "reason": "localize concentrated ASN anomaly", "priority": "medium"})
-            if concentrated:
-                facts.append({"fact": "asn_concentration", "claim": "P95 RTT 差异集中在少数 AS",
-                              "value": asn_rows[:3], "evidence_ids": [ledger.observed("ping.by_asn")[0]["evidence_id"]]})
+            facts.append({"fact_type": "asn_concentration", "status": "present" if concentrated else "absent",
+                          "fact": "asn_concentration", "claim": "P95 RTT 差异集中在少数 AS" if concentrated else "未发现明显的 AS 集中现象",
+                          "value": asn_rows[:3], "evidence_ids": [ledger.observed("ping.by_asn")[0]["evidence_id"]]})
             # Path-level queries are semantic requirements, not a mandatory
             # suffix of every ASN/prefix investigation. Requiring them for
             # unrelated diagnosis cases caused needless calls and premature
@@ -620,8 +648,13 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
     if ledger.has("ping.by_prefix24"):
         prefix_rows = (ledger.observed("ping.by_prefix24")[0].get("data") or {}).get("statistics", [])
         if prefix_rows:
-            facts.append({"fact": "prefix24_candidates", "claim": "异常候选集中到 Prefix24",
+            facts.append({"fact_type": "prefix_localization", "status": "present",
+                          "fact": "prefix24_candidates", "claim": "异常候选集中到 Prefix24",
                           "value": prefix_rows[:3], "evidence_ids": [ledger.observed("ping.by_prefix24")[0]["evidence_id"]]})
+        else:
+            facts.append({"fact_type": "prefix_localization", "status": "unresolved", "fact": "prefix24_candidates",
+                          "claim": "当前没有足够 Prefix24 样本完成定位", "value": [],
+                          "evidence_ids": [ledger.observed("ping.by_prefix24")[0]["evidence_id"]]})
     if ledger.has("ping.compare_window"):
         compare_item = ledger.observed("ping.compare_window")[0]
         compare_rows = (compare_item.get("data") or {}).get("comparison", [])
@@ -629,12 +662,21 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
             row = compare_rows[0]
             delta = row.get("p95_relative_delta")
             degraded = delta is not None and float(delta) > 0.2
-            facts.append({"fact": "baseline_degradation", "claim": "当前窗口 P95 RTT 相比历史基线明显变差" if degraded else "当前窗口 P95 RTT 未明显高于历史基线",
+            facts.append({"fact_type": "baseline_degradation", "status": "present" if degraded else "absent",
+                          "fact": "baseline_degradation", "claim": "当前窗口 P95 RTT 相比历史基线明显变差" if degraded else "当前窗口 P95 RTT 未明显高于历史基线",
                           "value": row, "evidence_ids": [compare_item["evidence_id"]]})
     if ledger.has("trace.paths"):
         path_rows = (ledger.observed("trace.paths")[0].get("data") or {}).get("paths", [])
-        facts.append({"fact": "traceroute_paths_observed", "claim": "已获得 Traceroute 路径证据",
+        facts.append({"fact_type": "path_change", "status": "unknown",
+                      "fact": "traceroute_paths_observed", "claim": "已获得 Traceroute 路径证据",
                       "value": path_rows[:3], "evidence_ids": [ledger.observed("trace.paths")[0]["evidence_id"]]})
+    if ledger.has("trace.path_change"):
+        change_rows = (ledger.observed("trace.path_change")[0].get("data") or {}).get("path_changes", [])
+        hashes = [row.get("dominant_path_hash") for row in change_rows if row.get("dominant_path_hash") is not None]
+        changed = any(left != right for left, right in zip(hashes, hashes[1:]))
+        facts.append({"fact_type": "path_change", "status": "present" if changed else "absent",
+                      "fact": "path_change", "claim": "检测到主导路径发生切换" if changed else "未检测到主导路径切换",
+                      "value": {"changed": changed}, "evidence_ids": [ledger.observed("trace.path_change")[0]["evidence_id"]]})
     cross_evidence = {"status": "not_assessed", "reason": "缺少 RTT 趋势和路径变化的共同证据"}
     if ledger.has("ping.trend") and ledger.has("trace.path_change"):
         trend_rows = (ledger.observed("ping.trend")[0].get("data") or {}).get("trend_data", [])
@@ -658,10 +700,14 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
         if overlap:
             cross_evidence = {"status": "correlated", "reason": "检测到主导路径切换，且 RTT 异常时间邻近；仅表示相关，不证明因果",
                               "time_buckets": overlap, "path_change_buckets": change_buckets, "evidence_ids": ids}
-            facts.append({"fact": "rtt_path_time_correlation", "claim": "RTT 趋势与路径变化时间上相关，但不能单独证明因果",
+            facts.append({"fact_type": "rtt_path_correlation", "status": "correlated",
+                          "fact": "rtt_path_time_correlation", "claim": "RTT 趋势与路径变化时间上相关，但不能单独证明因果",
                           "value": overlap, "evidence_ids": ids})
         else:
             cross_evidence = {"status": "not_correlated", "reason": "没有检测到主导路径切换与 RTT 异常的时间邻近关系；不据此推断因果", "path_change_buckets": change_buckets, "evidence_ids": ids}
+            facts.append({"fact_type": "rtt_path_correlation", "status": "not_correlated",
+                          "fact": "rtt_path_time_correlation", "claim": "未发现 RTT 异常与路径切换的时间邻近关系",
+                          "value": [], "evidence_ids": ids})
     elif ledger.has("trace.paths"):
         cross_evidence = {"status": "observed_only", "reason": "已观察到路径，但缺少路径变化与 RTT 的共同时间桶"}
     for fact in facts:
@@ -692,7 +738,7 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
                                "semantic_critic": semantic_critic or {"status": "disabled"}},
                     reason="证据足够" if verdict == "PASS" else "仍缺少证明当前结论所需的证据，回答将明确标注限制"))
     next_node = "synthesizer"
-    return {"verification": verification, "next_node": next_node, "trace": state.get("trace", []) + [_event(state, "verifier", started, reasoning=f"证据校验结果: {verdict}") ]}
+    return {"verification": verification, "next_node": next_node, "trace": state.get("trace", []) + [_event(state, "verifier", started, llm_used=bool(semantic_critic), reasoning=f"证据校验结果: {verdict}") ]}
 
 
 async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -727,6 +773,9 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
             bound = ledger.bind_claim(f"CL{index}", evidence_ids)
             bound["claim"] = fact.get("claim", fact.get("fact", ""))
             bound["fact"] = fact.get("fact")
+            bound["fact_type"] = fact.get("fact_type", fact.get("fact"))
+            bound["status"] = fact.get("status", "observed")
+            bound["value"] = fact.get("value")
             claims.append(bound)
     if claims and task.get("kind") == "network_analysis":
         # Claims are the factual answer surface even when no LLM is enabled.
@@ -769,4 +818,4 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
                    "generated_by": generated_by,
                    "claims": claims,
                    "verdict": verification.get("verdict")}
-    return {"answer": answer_data, "next_node": "end", "trace": state.get("trace", []) + [_event(state, "synthesizer", started, reasoning="仅基于证据账本生成回答与图表数据") ]}
+    return {"answer": answer_data, "next_node": "end", "trace": state.get("trace", []) + [_event(state, "synthesizer", started, llm_used=generated_by == "llm_claim_renderer", reasoning="仅基于证据账本生成回答与图表数据") ]}

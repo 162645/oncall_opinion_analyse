@@ -20,7 +20,7 @@ async def test_knowledge_request_completes_without_database():
 def test_diagnosis_plan_drills_down_in_stages():
     from src.harness.nodes import _steps
     task = {"kind": "network_analysis", "region": "UKRAINE", "goal": "diagnose",
-            "time_range": {"start_time": "a", "end_time": "b"}}
+        "time_range": {"start_time": "a", "end_time": "b"}, "wants_path_analysis": True}
     first = _steps(task, {"evidence": []})
     second = _steps(task, {"evidence": [
         {"evidence_id": "E1", "query_id": "ping.summary", "status": "observed"},

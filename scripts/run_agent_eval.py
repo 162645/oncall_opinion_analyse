@@ -44,12 +44,23 @@ async def run(cases: list[NetworkEvalCase], fixture_dir: Path, case_rows: list[d
         h, r = score_case(case, replay["state"]), score_case(case, react["state"])
         harness_results.append(h); react_results.append(r)
         raw.append({"case_id": case.case_id, "case_type": case.case_type, "expected_verdict": case.expected_verdict,
-                    "harness": h,
+                    "expected_queries": list(case.expected_queries), "harness": h,
                     "react": r, "harness_calls": replay["calls"], "react_calls": react["calls"],
+                    "harness_llm_by_node": [event.get("agent_name") for event in replay["state"].get("trace", [])
+                                            if event.get("llm_used")],
                     "react_llm_calls": react["llm_calls"], "react_strategy": react["strategy"]})
     def operational(rows: list[dict[str, Any]], key: str) -> dict[str, float]:
         values = [len(x[key]) for x in raw]
-        return {"average_tool_calls": sum(values) / len(values), "p95_tool_calls": sorted(values)[max(0, int(len(values) * .95) - 1)]}
+        total = sum(values)
+        useful = sum(sum(1 for call in item[key] if call.get("query_id") in set(item.get("expected_queries", [])))
+                     for item in raw)
+        strategy = key.replace("_calls", "")
+        coverage_efficiency = sum(float(item[strategy].get("evidence_coverage", 0.0)) / max(1, len(item[key]))
+                                  for item in raw) / len(raw)
+        return {"average_tool_calls": sum(values) / len(values),
+                "p95_tool_calls": sorted(values)[max(0, int(len(values) * .95) - 1)],
+                "useful_tool_rate": useful / total if total else 0.0,
+                "evidence_coverage_per_tool_call": coverage_efficiency}
     def diagnostics(strategy: str) -> dict[str, Any]:
         rows = [x[strategy] for x in raw]
         confusion: dict[str, dict[str, int]] = {}
@@ -100,6 +111,9 @@ def main() -> None:
               f"| Claim presence rate | {summary['free_react']['claim_presence_rate']:.2%} | {summary['harness']['claim_presence_rate']:.2%} |",
               f"| Claim recall | {summary['free_react']['claim_recall']:.2%} | {summary['harness']['claim_recall']:.2%} |",
               f"| Average tool calls | {summary['free_react']['average_tool_calls']:.2f} | {summary['harness']['average_tool_calls']:.2f} |",
+              f"| P95 tool calls | {summary['free_react']['p95_tool_calls']:.0f} | {summary['harness']['p95_tool_calls']:.0f} |",
+              f"| Useful tool rate | {summary['free_react']['useful_tool_rate']:.2%} | {summary['harness']['useful_tool_rate']:.2%} |",
+              f"| Evidence coverage / tool call | {summary['free_react']['evidence_coverage_per_tool_call']:.3f} | {summary['harness']['evidence_coverage_per_tool_call']:.3f} |",
               "", "The baseline is a DeepSeek LLM ReAct policy; Harness uses the same DeepSeek gateway with guarded planning and evidence verification.",
               "Raw per-case results are stored in the JSON report."]
         args.output.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")

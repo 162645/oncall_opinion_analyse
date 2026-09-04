@@ -32,18 +32,18 @@ def classify(fixture):
     path_change=any(int(x.get("path_count") or 0)>1 for x in changes)
     correlation=path_change and bool(values) and peak > p95*1.2
     unresolved=any(x.get("ip_asn") is None for x in asn) or any(x.get("prefix24") is None for x in fixture["ping.by_prefix24"].get("statistics",[]))
-    if degraded: return "baseline", ("ping.summary","ping.compare_window"), ["baseline_degradation"]
-    if correlation: return "path_correlation", ("ping.trend","trace.path_change"), ["p95_spike_detected","rtt_path_time_correlation"]
-    if path_change: return "path_without_rtt", ("trace.path_change",), ["traceroute_paths_observed"]
-    if concentrated: return "asn_concentrated", ("ping.summary","ping.by_asn"), ["p95_spike_detected","asn_concentration"]
-    if unresolved: return "null_attribution", ("ping.by_asn","ping.by_prefix24"), ["asn_attribution_unresolved"]
-    if peak > p95*1.2: return "normal_trend", ("ping.summary","ping.trend"), ["p95_spike_detected"]
+    if degraded: return "baseline", ("ping.summary","ping.compare_window"), [{"fact_type":"baseline_degradation","status":"present"}]
+    if correlation: return "path_correlation", ("ping.trend","trace.path_change"), [{"fact_type":"p95_spike","status":"present"},{"fact_type":"rtt_path_correlation","status":"correlated"}]
+    if path_change: return "path_without_rtt", ("trace.path_change",), [{"fact_type":"path_change","status":"present"}]
+    if concentrated: return "asn_concentrated", ("ping.summary","ping.by_asn"), [{"fact_type":"p95_spike","status":"present"},{"fact_type":"asn_concentration","status":"present"}]
+    if unresolved: return "null_attribution", ("ping.by_asn","ping.by_prefix24"), [{"fact_type":"attribution_resolution","status":"unresolved"}]
+    if peak > p95*1.2: return "normal_trend", ("ping.summary","ping.trend"), [{"fact_type":"p95_spike","status":"present"}]
     return "normal_summary", ("ping.summary",), []
 
 def contract(case_type, facts):
     """Declare only evidence that the measured facts make relevant."""
     if case_type == "baseline": return ("ping.summary", "ping.trend", "ping.compare_window")
-    if case_type == "asn_concentrated": return ("ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24", "trace.paths")
+    if case_type == "asn_concentrated": return ("ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24")
     if case_type == "null_attribution": return ("ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24")
     if case_type in {"path_correlation", "path_without_rtt"}: return ("ping.summary", "ping.trend", "trace.path_change")
     if case_type == "normal_trend": return ("ping.summary", "ping.trend")
@@ -67,16 +67,16 @@ def main():
         region=regions[i%len(regions)]; lo,hi=c.execute(f"SELECT min(measure_time),max(measure_time) FROM {region}__ping")[0]
         if lo.tzinfo is None: lo,hi=lo.replace(tzinfo=timezone.utc),hi.replace(tzinfo=timezone.utc)
         span=max(3600,int((hi-lo).total_seconds())); width=min(24*3600,span); start=lo+timedelta(seconds=(span-width)*i/max(1,args.count-3)); end=start+timedelta(seconds=width)
-        fixture=fetch(c,region,start,end); typ,_,raw_facts=classify(fixture); allowed=set(raw_facts)
+        fixture=fetch(c,region,start,end); typ,_,raw_facts=classify(fixture); allowed={x["fact_type"] for x in raw_facts}
         required=tuple(q for q in contract(typ,allowed) if available(fixture,q))
-        if "ping.trend" in required: allowed.add("p95_spike_detected")
+        if "ping.trend" in required: allowed.add("p95_spike")
         if "ping.by_asn" in required: allowed.add("asn_concentration")
         if "ping.by_prefix24" in required: allowed.add("prefix24_candidates")
-        if "trace.path_change" in required: allowed.update({"traceroute_paths_observed","rtt_path_time_correlation"})
+        if "trace.path_change" in required: allowed.update({"path_change","rtt_path_correlation"})
         allowed=sorted(allowed); cid=f"N{i+1:03d}"
         (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps({k:fixture[k] for k in required},ensure_ascii=False,indent=2)+"\n")
         verdict="PARTIAL" if typ in {"path_correlation","path_without_rtt"} and required else ("PASS" if required else "ABSTAIN")
-        cases.append({"case_id":cid,"query":f"{region}：请{wording(typ)}，时间范围 {start.isoformat()} 至 {end.isoformat()}","fixture_path":f"fixtures/{cid}.json","required_queries":list(required),"expected_verdict":verdict,"allowed_facts":allowed,"expected_facts":sorted(raw_facts),"forbidden_facts":["path_change_caused_rtt"],"case_type":"real_data_replay"}); counts[typ]=counts.get(typ,0)+1
+        cases.append({"case_id":cid,"query":f"{region}：请{wording(typ)}，时间范围 {start.isoformat()} 至 {end.isoformat()}","fixture_path":f"fixtures/{cid}.json","required_queries":list(required),"expected_verdict":verdict,"allowed_facts":sorted(allowed),"expected_facts":raw_facts,"forbidden_facts":["path_change_caused_rtt"],"case_type":"real_data_replay"}); counts[typ]=counts.get(typ,0)+1
     for j in range(2):
         base=cases[j]; cid=f"N{args.count-1+j:03d}"; fixture=json.loads((args.output/"fixtures"/f"{base['case_id']}.json").read_text()); fixture["ping.trend"]={"__error__":"controlled transient failure","error_kind":"transient"}; (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps(fixture,ensure_ascii=False,indent=2)+"\n")
         cases.append({**base,"case_id":cid,"fixture_path":f"fixtures/{cid}.json","expected_verdict":"PARTIAL","case_type":"fault_injection"}); counts["fault_injection"]=counts.get("fault_injection",0)+1
