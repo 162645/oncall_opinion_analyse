@@ -485,6 +485,15 @@ async def _llm_semantic_critic(state: Dict[str, Any], facts: List[Dict[str, Any]
     """Check semantic completeness only; it cannot create facts or evidence."""
     if os.getenv("HARNESS_VERIFIER_LLM_ENABLED", "false").lower() != "true":
         return None
+    # The critic is an expensive second opinion.  Keep it for long-tail or
+    # genuinely multi-dimensional requests; simple catalog recipes already
+    # have deterministic coverage checks.  Set mode=always for diagnostics.
+    critic_mode = os.getenv("HARNESS_VERIFIER_LLM_MODE", "complex_only").lower()
+    task = state.get("task") or {}
+    requirements = task.get("semantic_requirements") or []
+    is_complex = (task.get("planning_mode") == "long_tail" or len(requirements) >= 2)
+    if critic_mode != "always" and not is_complex:
+        return None
     try:
         from src.llm import get_llm_gateway, LLMConfig
         prompt = (

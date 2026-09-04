@@ -34,13 +34,15 @@ def load_cases(path: Path) -> list[NetworkEvalCase]:
     ) for row in rows]
 
 
-async def run(cases: list[NetworkEvalCase], fixture_dir: Path, case_rows: list[dict[str, Any]]) -> dict[str, Any]:
+async def run(cases: list[NetworkEvalCase], fixture_dir: Path, case_rows: list[dict[str, Any]],
+              *, react_max_tool_calls: int = 8) -> dict[str, Any]:
     harness_results, react_results, raw = [], [], []
     for case in cases:
         row = next(x for x in case_rows if x["case_id"] == case.case_id)
         fixture = json.loads((fixture_dir / row["fixture_path"]).read_text(encoding="utf-8"))
         replay = await run_harness_replay({"case_id": case.case_id, "query": case.query}, fixture)
-        react = await run_react_replay({"case_id": case.case_id, "query": case.query}, fixture)
+        react = await run_react_replay({"case_id": case.case_id, "query": case.query}, fixture,
+                                       max_tool_calls=react_max_tool_calls)
         h, r = score_case(case, replay["state"]), score_case(case, react["state"])
         harness_results.append(h); react_results.append(r)
         raw.append({"case_id": case.case_id, "case_type": case.case_type, "expected_verdict": case.expected_verdict,
@@ -90,15 +92,28 @@ def main() -> None:
     parser.add_argument("--fixture", type=Path, help="single fixture compatibility mode")
     parser.add_argument("--fixture-dir", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--max-cases", type=int, default=None,
+                        help="只运行前 N 个 Case，避免开发阶段意外触发全量 API 费用")
+    parser.add_argument("--react-max-tool-calls", type=int, default=8,
+                        help="Free ReAct 每个 Case 的最大工具调用次数")
     args = parser.parse_args()
     rows = [json.loads(line) for line in args.cases.read_text(encoding="utf-8").splitlines() if line.strip()]
     cases = load_cases(args.cases)
+    if args.max_cases is not None:
+        if args.max_cases <= 0:
+            parser.error("--max-cases must be positive")
+        cases = cases[:args.max_cases]
+        selected = {case.case_id for case in cases}
+        rows = [row for row in rows if row["case_id"] in selected]
     if args.fixture_dir:
-        report = asyncio.run(run(cases, args.fixture_dir, rows))
+        report = asyncio.run(run(cases, args.fixture_dir, rows,
+                                 react_max_tool_calls=args.react_max_tool_calls))
     else:
         # Retain the original one-fixture mode for small smoke experiments.
         fixture = json.loads(args.fixture.read_text(encoding="utf-8"))
-        report = asyncio.run(run(cases, args.cases.parent, [{"case_id": c.case_id, "fixture_path": args.fixture.name} for c in cases]))
+        report = asyncio.run(run(cases, args.cases.parent,
+                                 [{"case_id": c.case_id, "fixture_path": args.fixture.name} for c in cases],
+                                 react_max_tool_calls=args.react_max_tool_calls))
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.write_text(rendered + "\n", encoding="utf-8")

@@ -66,9 +66,12 @@ async def llm_policy(query: str, observations: list[dict[str, Any]], catalog: li
         return {"final": True, "claims": [], "invalid_decision": True}
 
 
-async def run_react_replay(case: Dict[str, Any], fixture: Dict[str, Any], *, max_tool_calls: int = 8,
+async def run_react_replay(case: Dict[str, Any], fixture: Dict[str, Any], *, max_tool_calls: int | None = None,
                            model_policy: Policy | None = None) -> Dict[str, Any]:
     """Run Free ReAct with only query, catalog and accumulated observations."""
+    if max_tool_calls is None:
+        import os
+        max_tool_calls = max(1, int(os.getenv("EVAL_REACT_MAX_TOOL_CALLS", "8")))
     runtime = ReplayRuntime(fixture)
     if model_policy is None:
         import os
