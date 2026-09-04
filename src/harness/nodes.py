@@ -339,6 +339,8 @@ def _steps(task: Dict[str, Any], execution: Dict[str, Any], verification: Dict[s
                 for query_id in retryable_failed if query_id in CATALOG]
     if ledger.has("ping.summary") and not ledger.has("ping.trend"):
         return [{"query_id": "ping.trend", "params": {"query_type": "ping_trend", "interval": "hour", **base}}]
+    if task.get("wants_path_analysis") and not ledger.has("trace.path_change"):
+        return [{"query_id": "trace.path_change", "params": {"query_type": "trace_path_change", **base}}]
     if task.get("goal") != "diagnose":
         if task.get("analysis_dimensions") and "time" in task.get("analysis_dimensions", []) and not ledger.has("ping.trend"):
             return [{"query_id": "ping.trend", "params": {"query_type": "ping_trend", "interval": "hour", **base}}]
