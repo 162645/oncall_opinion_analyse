@@ -71,7 +71,7 @@ def main():
         required=tuple(q for q in contract(typ,allowed) if available(fixture,q))
         if "ping.trend" in required: allowed.add("p95_spike")
         if "ping.by_asn" in required: allowed.add("asn_concentration")
-        if "ping.by_prefix24" in required: allowed.add("prefix24_candidates")
+        if "ping.by_prefix24" in required: allowed.add("prefix_localization")
         if "trace.path_change" in required: allowed.update({"path_change","rtt_path_correlation"})
         allowed=sorted(allowed); cid=f"N{i+1:03d}"
         (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps({k:fixture[k] for k in required},ensure_ascii=False,indent=2)+"\n")

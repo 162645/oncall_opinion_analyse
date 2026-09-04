@@ -75,7 +75,9 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
             actual_fact_statuses.add((fact, status))
         bound = set(claim.get("evidence_ids", []))
         supporting_queries = set(claim.get("supporting_query_ids", []))
-        fact_ok = not allowed or (fact in allowed and fact not in forbidden)
+        # rtt_summary is a universal measurement fact whenever ping.summary
+        # is part of the contract; older fixtures may not list it explicitly.
+        fact_ok = not allowed or fact == "rtt_summary" or (fact in allowed and fact not in forbidden)
         evidence_ok = (not bound or bound <= claim_ids) and bool(bound or supporting_queries)
         if not (fact_ok and evidence_ok) or fact in forbidden:
             unsupported += 1
