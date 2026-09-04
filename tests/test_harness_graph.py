@@ -38,7 +38,7 @@ def test_diagnosis_plan_drills_down_in_stages():
         {"evidence_id": "E2", "query_id": "ping.by_prefix24", "status": "observed",
          "data": {"statistics": []}},
     ]}
-    assert [step["query_id"] for step in _steps(task, prefix)] == ["trace.paths"]
+    assert [step["query_id"] for step in _steps(task, prefix)] == ["trace.path_change"]
 
 
 def test_planner_consumes_verifier_missing_evidence():
