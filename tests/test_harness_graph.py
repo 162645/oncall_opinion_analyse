@@ -20,7 +20,7 @@ async def test_knowledge_request_completes_without_database():
 def test_diagnosis_plan_drills_down_in_stages():
     from src.harness.nodes import _steps
     task = {"kind": "network_analysis", "region": "UKRAINE", "goal": "diagnose",
-        "time_range": {"start_time": "a", "end_time": "b"}, "wants_path_analysis": True}
+        "time_range": {"start_time": "a", "end_time": "b"}}
     first = _steps(task, {"evidence": []})
     second = _steps(task, {"evidence": [
         {"evidence_id": "E1", "query_id": "ping.summary", "status": "observed"},
@@ -38,7 +38,10 @@ def test_diagnosis_plan_drills_down_in_stages():
         {"evidence_id": "E2", "query_id": "ping.by_prefix24", "status": "observed",
          "data": {"statistics": []}},
     ]}
-    assert [step["query_id"] for step in _steps(task, prefix)] == ["trace.path_change"]
+    assert [step["query_id"] for step in _steps(task, prefix)] == []
+
+    path_task = {**task, "wants_path_analysis": True}
+    assert [step["query_id"] for step in _steps(path_task, prefix)] == ["trace.path_change"]
 
 
 def test_planner_consumes_verifier_missing_evidence():
@@ -92,7 +95,7 @@ async def test_full_four_round_drilldown_with_fake_clickhouse(monkeypatch):
 
     monkeypatch.setattr("src.harness.nodes.get_clickhouse_client", lambda: FakeClient())
     result = await EvidenceDrivenHarness().execute(
-        "分析 UKRAINE 最近 24 小时延迟异常原因，并检查路径变化", session_id="fake-four-round"
+        "分析 UKRAINE 最近 24 小时延迟异常原因，并定位 ASN 后检查路径变化", session_id="fake-four-round"
     )
     assert result.success is True
     assert result.state["round"] == 4

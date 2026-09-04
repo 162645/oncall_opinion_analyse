@@ -98,6 +98,15 @@ def _top_asn(ledger: EvidenceLedger) -> int | None:
     return int(value) if value is not None else None
 
 
+def _needs_asn(task: Dict[str, Any]) -> bool:
+    """Map semantic intent to ASN capability without forcing it on path cases."""
+    dimensions = set(task.get("analysis_dimensions") or [])
+    requirements = set(task.get("semantic_requirements") or [])
+    if task.get("wants_path_analysis") and "asn" not in dimensions and "locate_asn" not in requirements:
+        return False
+    return True
+
+
 def _rtt_anomaly_buckets(ledger: EvidenceLedger, rows: List[Dict[str, Any]]) -> List[str]:
     values = [float(row.get("p95_rtt") or 0) for row in rows]
     if not values:
@@ -332,7 +341,7 @@ def _steps(task: Dict[str, Any], execution: Dict[str, Any], verification: Dict[s
         if task.get("analysis_dimensions") and "time" in task.get("analysis_dimensions", []) and not ledger.has("ping.trend"):
             return [{"query_id": "ping.trend", "params": {"query_type": "ping_trend", "interval": "hour", **base}}]
         return []
-    if not ledger.has("ping.by_asn"):
+    if _needs_asn(task) and not ledger.has("ping.by_asn"):
         return [{"query_id": "ping.by_asn", "params": {"query_type": "ping_stats", "group_by": ["ip_asn"], **base}}]
     concentrated, asn_rows = _asn_concentration(ledger)
     if concentrated and not ledger.has("ping.by_prefix24"):
@@ -628,10 +637,10 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
             freshness_issues.append(f"{item['evidence_id']}: observed_at is in the future")
     missing = []
     if task.get("kind") == "network_analysis" and task.get("goal") == "diagnose":
-        if not ledger.has("ping.by_asn"):
+        if _needs_asn(task) and not ledger.has("ping.by_asn"):
             coverage_issues.append("缺少 AS 归因证据")
             missing.append({"query_id": "ping.by_asn", "reason": "attribute latency by ASN", "priority": "high"})
-        else:
+        elif _needs_asn(task):
             asn_rows = (ledger.observed("ping.by_asn")[0].get("data") or {}).get("statistics", [])
             concentrated, asn_rows = _asn_concentration(ledger)
             if concentrated and not ledger.has("ping.by_prefix24"):
