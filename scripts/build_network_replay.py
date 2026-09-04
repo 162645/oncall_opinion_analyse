@@ -75,7 +75,10 @@ def main():
         if "trace.path_change" in required: allowed.update({"path_change","rtt_path_correlation"})
         allowed=sorted(allowed); cid=f"N{i+1:03d}"
         (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps({k:fixture[k] for k in required},ensure_ascii=False,indent=2)+"\n")
-        verdict="PARTIAL" if typ in {"path_correlation","path_without_rtt"} and required else ("PASS" if required else "ABSTAIN")
+        # Verdict is evidence availability, not causal certainty. The
+        # verifier can safely PASS a path case when the requested path
+        # evidence is complete; causal claims remain forbidden separately.
+        verdict="PASS" if required else "ABSTAIN"
         cases.append({"case_id":cid,"query":f"{region}：请{wording(typ)}，时间范围 {start.isoformat()} 至 {end.isoformat()}","fixture_path":f"fixtures/{cid}.json","required_queries":list(required),"expected_verdict":verdict,"allowed_facts":sorted(allowed),"expected_facts":raw_facts,"forbidden_facts":["path_change_caused_rtt"],"case_type":"real_data_replay"}); counts[typ]=counts.get(typ,0)+1
     for j in range(2):
         base=cases[j]; cid=f"N{args.count-1+j:03d}"; fixture=json.loads((args.output/"fixtures"/f"{base['case_id']}.json").read_text()); fixture["ping.trend"]={"__error__":"controlled transient failure","error_kind":"transient"}; (args.output/"fixtures"/f"{cid}.json").write_text(json.dumps(fixture,ensure_ascii=False,indent=2)+"\n")
