@@ -202,8 +202,10 @@ async def _llm_task_spec(state: Dict[str, Any], draft: Dict[str, Any]) -> Dict[s
                 "end_time": str(time_range["end_time"]), "hours": draft["time_range"].get("hours", 24)},
                 "metric": candidate.get("metric") if candidate.get("metric") in {"rtt", "p95", "p99"} else draft["metric"],
                 "planning_mode": candidate.get("planning_mode") if candidate.get("planning_mode") in {"recipe", "long_tail"} else draft.get("planning_mode", "recipe"),
-                "needs_baseline": bool(candidate.get("needs_baseline", draft.get("needs_baseline", False))),
-                "wants_path_analysis": bool(candidate.get("wants_path_analysis", draft.get("wants_path_analysis", False))),
+                # Critical routing intents are monotonic: the LLM may add a
+                # requirement, but must not erase an explicit rule signal.
+                "needs_baseline": bool(draft.get("needs_baseline", False) or candidate.get("needs_baseline", False)),
+                "wants_path_analysis": bool(draft.get("wants_path_analysis", False) or candidate.get("wants_path_analysis", False)),
                 "analysis_dimensions": dimensions or draft.get("analysis_dimensions", []),
                 "comparison": candidate.get("comparison") if isinstance(candidate.get("comparison"), dict) else draft.get("comparison", {}),
                 "constraints": [str(x)[:160] for x in (candidate.get("constraints") or draft.get("constraints", [])) if str(x).strip()][:8],
