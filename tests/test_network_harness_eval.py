@@ -16,6 +16,19 @@ def test_network_eval_reports_interviewable_metrics():
     assert metrics["evidence_coverage"] == 1.0
     assert metrics["unsupported_claim_rate"] == 0.0
     assert metrics["average_query_count"] == 2.0
+    assert metrics["task_success_rate"] == 0.0  # no expected fact claim was emitted
+
+
+def test_task_success_requires_expected_facts_and_grounded_claims():
+    case = DEFAULT_CASES[0]
+    state = {
+        "task": {"kind": "network_analysis"},
+        "execution": {"evidence": [{"evidence_id": "E1", "query_id": "ping.summary", "status": "observed"},
+                                      {"evidence_id": "E2", "query_id": "ping.trend", "status": "observed"}]},
+        "verification": {"verdict": "PASS"},
+        "answer": {"claims": [{"fact_type": "p95_spike", "status": "present", "evidence_ids": ["E2"]}]},
+    }
+    assert score_case(case, state)["task_success"] is True
 
 
 def test_eval_matrix_and_strategy_comparison_are_available():

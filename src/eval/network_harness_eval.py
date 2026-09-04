@@ -1,4 +1,4 @@
-"""Small deterministic evaluation set for interviewable Harness metrics.
+"""Deterministic replay scoring for interviewable Harness metrics.
 
 The evaluator scores planning and evidence discipline from completed Harness
 states. It does not pretend to measure production accuracy without labelled
@@ -82,6 +82,18 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
         if not (fact_ok and evidence_ok) or fact in forbidden:
             unsupported += 1
     cross_status = verification.get("checks", {}).get("cross_evidence", {}).get("status")
+    claim_recall = _claim_recall(actual_facts, actual_fact_statuses, case.expected_facts, bool(claims))
+    # End-to-end success is deliberately stricter than verdict matching:
+    # every required ground-truth fact must be present, claims must be
+    # grounded, and an abstention case must actually abstain.  This prevents
+    # a conservative empty answer from receiving a perfect safety score.
+    required_facts = [item for item in case.expected_facts
+                      if not isinstance(item, dict) or item.get("required", True)]
+    has_factual_claim = any(item.get("fact_type") or item.get("fact") for item in claims)
+    fact_complete = claim_recall >= 1.0 if required_facts else has_factual_claim or case.expected_verdict == "ABSTAIN"
+    task_success = bool(fact_complete and unsupported == 0 and
+                        (verification.get("verdict") != "unknown") and
+                        (case.expected_verdict != "ABSTAIN" or verification.get("verdict") == "ABSTAIN"))
     return {
         "case_id": case.case_id,
         "verdict": verification.get("verdict", "unknown"),
@@ -91,7 +103,13 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
         "unsupported_claim_rate": unsupported / len(claims) if claims else 0.0,
         "claim_count": len(claims),
         "claim_presence": bool(claims),
-        "claim_recall": _claim_recall(actual_facts, actual_fact_statuses, case.expected_facts, bool(claims)),
+        "claim_recall": claim_recall,
+        "task_success": task_success,
+        "task_success_reasons": {
+            "required_facts_complete": bool(fact_complete),
+            "grounded_claims": unsupported == 0,
+            "abstention_correct": case.expected_verdict != "ABSTAIN" or verification.get("verdict") == "ABSTAIN",
+        },
         "missing_required_queries": sorted(expected - evidence_queries),
         "correct_abstain": verification.get("verdict") == case.expected_verdict,
         "cross_status_match": case.expected_cross_status is None or cross_status == case.expected_cross_status,
@@ -132,6 +150,7 @@ def evaluate_cases(results: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "average_query_count": average("query_count"),
         "claim_presence_rate": average("claim_presence"),
         "claim_recall": average("claim_recall"),
+        "task_success_rate": average("task_success"),
     }
 
 
