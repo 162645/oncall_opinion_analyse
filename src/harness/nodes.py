@@ -372,12 +372,16 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
     if llm_retrieval_plan is not None:
         needs_context = llm_retrieval_plan["need_retrieval"]
         context_data["retrieval_plan"] = llm_retrieval_plan
-    if task.get("kind") in {"knowledge", "network_analysis"} and needs_context:
+    if llm_retrieval_plan is None and needs_context:
         context_data["retrieval_plan"] = {"need_retrieval": True, "sources": [
             {"source": "knowledge", "query": state["query"], "purpose": "补充领域分析约束", "priority": "high"},
             {"source": "skill", "query": state["query"], "purpose": "匹配分析技能", "priority": "medium"},
             {"source": "graph", "query": "latency rtt path timeout", "purpose": "提供历史关系提示", "priority": "low"},
         ]}
+    sources = {item.get("source") for item in context_data.get("retrieval_plan", {}).get("sources", [])}
+    # A deterministic fallback plan requests all bounded sources. When an
+    # LLM plan exists, execute only the sources it explicitly selected.
+    if task.get("kind") in {"knowledge", "network_analysis"} and needs_context:
         try:
             from src.knowledge import get_knowledge_service
             retrieval_query = state["query"] if task.get("kind") == "knowledge" else (
@@ -391,14 +395,16 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
             context_data["data_source"] = "ClickHouse + Qdrant/BM25/Neo4j knowledge context"
         except Exception as exc:
             context_data["knowledge_error"] = str(exc)
-        try:
+        if not sources or "skill" in sources:
+          try:
             from src.skill import get_skill_service
             matches = await asyncio.wait_for(get_skill_service().search(state["query"], top_k=3), timeout=1.0)
             context_data["skill_matches"] = [{"name": item.skill.name, "score": item.score,
                                                "reason": item.match_reason} for item in matches]
-        except Exception as exc:
+          except Exception as exc:
             context_data["skill_error"] = str(exc)
-        try:
+        if not sources or "graph" in sources:
+          try:
             from src.knowledge.graph.query import GraphQuery
             from src.knowledge import get_knowledge_service
             graph = getattr(get_knowledge_service(), "graph", None)
@@ -408,7 +414,7 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
                     ["latency", "rtt", "path", "timeout"], 3,
                 ), timeout=1.0)
                 context_data["graph_context"] = graph_matches
-        except Exception as exc:
+          except Exception as exc:
             context_data["graph_error"] = str(exc)
     synthesized = await _llm_context_synthesis(state, context_data) if needs_context else None
     synthesized = synthesized or {}
