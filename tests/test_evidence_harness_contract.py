@@ -43,7 +43,7 @@ async def test_understand_llm_enriches_semantics_without_breaking_contract(monke
     update = await understand({"query": "UKRAINE 比较白天和凌晨的路径变化与 P95 延迟", "trace": []})
     assert update["task"]["planning_mode"] == "long_tail"
     assert update["task"]["analysis_dimensions"] == ["time", "path"]
-    assert update["task"]["semantic_requirements"] == ["compare_day_night"]
+    assert update["task"]["semantic_requirements"] == ["compare_day_night", "explain_path_change_without_claiming_causality"]
 
 
 @pytest.mark.asyncio

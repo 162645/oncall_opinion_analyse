@@ -13,7 +13,7 @@ from src.runtime import PermissionLevel, ToolDefinition, ToolRuntime
 from .catalog import CATALOG, catalog_description, compile_sql, get_query_spec
 from .ledger import EvidenceLedger
 from .mcp_adapter import CatalogMCPAdapter
-from .models import AnalysisPlan, TaskSpec, Verification, to_dict
+from .models import AnalysisPlan, PlanningContext, RetrievalPlan, SemanticReview, TaskSpec, Verification, to_dict
 
 
 def _catalog_runtime() -> ToolRuntime:
@@ -131,6 +131,35 @@ def _event(state: Dict[str, Any], node: str, started: float, status: str = "succ
             "action": node, "duration_ms": int((time.perf_counter() - started) * 1000), "status": status, **extra}
 
 
+async def _llm_generate(state: Dict[str, Any], prompt: str, *, config: Any = None,
+                        timeout_seconds: float = 5.0) -> Any | None:
+    """Shared LLM boundary with per-run call/token budgets.
+
+    Nodes may decide what to ask, but no node can bypass the Harness budget.
+    Only usage metadata is retained; hidden chain-of-thought is never stored.
+    """
+    budget = state.setdefault("budget", {})
+    usage = state.setdefault("llm_usage", {"calls_used": 0, "tokens_in": 0, "tokens_out": 0, "estimated_cost": 0.0})
+    if int(usage.get("calls_used", 0)) >= int(budget.get("max_llm_calls", 12)):
+        return None
+    if int(usage.get("tokens_in", 0)) + int(usage.get("tokens_out", 0)) >= int(budget.get("max_llm_tokens", 12000)):
+        return None
+    try:
+        from src.llm import get_llm_gateway
+        try:
+            response = await asyncio.wait_for(get_llm_gateway().generate(prompt, config=config), timeout=timeout_seconds)
+        except TypeError:
+            response = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=timeout_seconds)
+        response_usage = getattr(response, "usage", None) or {}
+        usage["calls_used"] = int(usage.get("calls_used", 0)) + 1
+        usage["tokens_in"] = int(usage.get("tokens_in", 0)) + int(response_usage.get("prompt_tokens", 0))
+        usage["tokens_out"] = int(usage.get("tokens_out", 0)) + int(response_usage.get("completion_tokens", 0))
+        return response
+    except Exception:
+        # LLM is an enhancement; deterministic guards remain authoritative.
+        return None
+
+
 def _region(query: str) -> str | None:
     lower = query.lower()
     for alias, value in REGION_ALIASES.items():
@@ -173,16 +202,16 @@ async def _llm_task_spec(state: Dict[str, Any], draft: Dict[str, Any]) -> Dict[s
             "planning_mode(recipe/long_tail), time_range(start_time,end_time), "
             "analysis_dimensions(只能是time/asn/prefix/path/region/operator数组), "
             "comparison(对象), constraints(字符串数组), semantic_requirements(字符串数组), "
+            "intent_summary(字符串), sub_questions(字符串数组), answer_requirements(字符串数组), ambiguities(字符串数组), "
             "semantic_confidence(0到1)。"
             "不要生成 SQL，不要添加字段。若无法确定则保留规则草稿字段。"
             f"\n用户问题：{state['query']}\n规则草稿：{json.dumps(draft, ensure_ascii=False)}"
         )
         from src.llm import LLMConfig
-        try:
-            response = await asyncio.wait_for(get_llm_gateway().generate(prompt, config=LLMConfig(
-                temperature=float(os.getenv("HARNESS_LLM_TEMPERATURE", "0")), max_tokens=1024)), timeout=5.0)
-        except TypeError:
-            response = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=5.0)
+        response = await _llm_generate(state, prompt, config=LLMConfig(
+            temperature=float(os.getenv("HARNESS_LLM_TEMPERATURE", "0")), max_tokens=1024), timeout_seconds=5.0)
+        if response is None:
+            return None
         candidate = _extract_json_object(response.content)
         if not isinstance(candidate, dict):
             return None
@@ -207,9 +236,15 @@ async def _llm_task_spec(state: Dict[str, Any], draft: Dict[str, Any]) -> Dict[s
                 "needs_baseline": bool(draft.get("needs_baseline", False) or candidate.get("needs_baseline", False)),
                 "wants_path_analysis": bool(draft.get("wants_path_analysis", False) or candidate.get("wants_path_analysis", False)),
                 "analysis_dimensions": dimensions or draft.get("analysis_dimensions", []),
+                "intent_summary": str(candidate.get("intent_summary") or draft.get("intent_summary", ""))[:300],
+                "sub_questions": [str(x)[:200] for x in (candidate.get("sub_questions") or draft.get("sub_questions", [])) if str(x).strip()][:8],
+                "answer_requirements": [str(x)[:200] for x in (candidate.get("answer_requirements") or draft.get("answer_requirements", [])) if str(x).strip()][:8],
+                "ambiguities": [str(x)[:200] for x in (candidate.get("ambiguities") or draft.get("ambiguities", [])) if str(x).strip()][:8],
                 "comparison": candidate.get("comparison") if isinstance(candidate.get("comparison"), dict) else draft.get("comparison", {}),
                 "constraints": [str(x)[:160] for x in (candidate.get("constraints") or draft.get("constraints", [])) if str(x).strip()][:8],
-                "semantic_requirements": [str(x)[:160] for x in (candidate.get("semantic_requirements") or draft.get("semantic_requirements", [])) if str(x).strip()][:8],
+                "semantic_requirements": list(dict.fromkeys(
+                    [str(x)[:160] for x in (draft.get("semantic_requirements", []) + (candidate.get("semantic_requirements") or [])) if str(x).strip()]
+                ))[:8],
                 "semantic_confidence": max(0.0, min(1.0, float(candidate.get("semantic_confidence", draft.get("semantic_confidence", 0.6))))) }
     except Exception:
         return None
@@ -239,12 +274,16 @@ async def understand(state: Dict[str, Any]) -> Dict[str, Any]:
         task["semantic_requirements"].append("compare_day_night")
     if task["wants_path_analysis"]:
         task["semantic_requirements"].append("explain_path_change_without_claiming_causality")
+    task["intent_summary"] = "分析网络测量数据并回答用户提出的质量或异常问题"
+    task["sub_questions"] = []
+    task["answer_requirements"] = ["给出测量事实", "标注证据不足与不确定性"]
+    task["ambiguities"] = []
     task["semantic_confidence"] = 0.65 if task["region"] else 0.35
-    # LLM is the semantic interpreter for non-trivial requests; the rule draft
+    # # LLM is the semantic interpreter for non-trivial requests; the rule draft
     # remains the fallback and Pydantic is the final boundary.
     llm_enabled = os.getenv("HARNESS_UNDERSTAND_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true"
     llm_used = False
-    understand_mode = os.getenv("HARNESS_UNDERSTAND_MODE", "hybrid").lower()
+    understand_mode = os.getenv("HARNESS_UNDERSTAND_MODE", "llm_first").lower()
     low_confidence = (understand_mode == "llm_first" or not task["region"] or complexity_signals >= 1
                       or len(task["analysis_dimensions"]) >= 2)
     if low_confidence and llm_enabled:
@@ -266,10 +305,19 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
                     "recipe_hints": {"name": recipe, "stages": ["summary", "trend", "asn", "prefix24", "trace"]
                                      if task.get("kind") == "network_analysis" else ["retrieve", "cite"]},
                     "semantic_hints": ["measurement evidence is authoritative", "context evidence is non-causal background"],
-                    "knowledge": [], "graph_context": [], "skill_matches": [], "data_source": "ClickHouse"}
+                    "knowledge": [], "graph_context": [], "skill_matches": [], "data_source": "ClickHouse",
+                    "retrieval_plan": {"need_retrieval": False, "sources": []}}
     # Network investigations also receive semantic context. Retrieval is an
     # input to planning, never a substitute for measured evidence.
-    if task.get("kind") in {"knowledge", "network_analysis"}:
+    needs_context = (task.get("kind") == "knowledge" or task.get("planning_mode") == "long_tail"
+                     or len(task.get("semantic_requirements", [])) >= 2
+                     or len(task.get("analysis_dimensions", [])) >= 2)
+    if task.get("kind") in {"knowledge", "network_analysis"} and needs_context:
+        context_data["retrieval_plan"] = {"need_retrieval": True, "sources": [
+            {"source": "knowledge", "query": state["query"], "purpose": "补充领域分析约束", "priority": "high"},
+            {"source": "skill", "query": state["query"], "purpose": "匹配分析技能", "priority": "medium"},
+            {"source": "graph", "query": "latency rtt path timeout", "purpose": "提供历史关系提示", "priority": "low"},
+        ]}
         try:
             from src.knowledge import get_knowledge_service
             retrieval_query = state["query"] if task.get("kind") == "knowledge" else (
@@ -302,7 +350,17 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
                 context_data["graph_context"] = graph_matches
         except Exception as exc:
             context_data["graph_error"] = str(exc)
-    return {"context": context_data, "next_node": "planner", "trace": state.get("trace", []) + [_event(state, "context", started, reasoning="装载查询目录、分析配方与数据源约束") ]}
+    context_data["planning_context"] = to_dict(PlanningContext(
+        task_summary=task.get("intent_summary", state.get("query", "")),
+        domain_guidance=[item.get("content", "")[:240] for item in context_data.get("knowledge", [])[:3]],
+        historical_context=[str(item)[:240] for item in context_data.get("graph_context", [])[:3]],
+        entity_context=[str(item.get("name", "")) for item in context_data.get("skill_matches", [])[:2]],
+        known_facts=[], unknowns=list(task.get("ambiguities", [])),
+        hypotheses=[], available_capabilities=[item["query_id"] for item in context_data["catalog"]],
+        constraints=["上下文只能影响规划，不构成测量事实", "最终 Claim 必须绑定 Measurement Evidence"],
+        confidence=0.7 if context_data.get("retrieval_plan", {}).get("need_retrieval") else 1.0,
+    ))
+    return {"context": context_data, "next_node": "planner", "trace": state.get("trace", []) + [_event(state, "context", started, reasoning="完成上下文需求判断、检索与 PlanningContext 压缩") ]}
 
 
 def _steps(task: Dict[str, Any], execution: Dict[str, Any], verification: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
@@ -433,16 +491,16 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             f"\nSkillMatches={json.dumps(context.get('skill_matches', [])[:2], ensure_ascii=False, default=str)}"
             f"\nKnowledgeHints={json.dumps(context.get('knowledge', [])[:3], ensure_ascii=False, default=str)[:4000]}"
             f"\nGraphHints={json.dumps(context.get('graph_context', [])[:3], ensure_ascii=False, default=str)}"
+            f"\nPlanningContext={json.dumps(context.get('planning_context', {}), ensure_ascii=False, default=str)[:5000]}"
             f"\nEvidence={json.dumps(evidence, ensure_ascii=False, default=str)[:8000]}"
             f"\nRecipeCandidate={json.dumps(_steps(task, state.get('execution', {}), state.get('verification', {})), ensure_ascii=False, default=str)}"
             "\n请选择当前最有价值且尚未成功执行的查询。"
         )
         from src.llm import LLMConfig
-        try:
-            response = await asyncio.wait_for(get_llm_gateway().generate(prompt, config=LLMConfig(
-                temperature=float(os.getenv("HARNESS_LLM_TEMPERATURE", "0")), max_tokens=1024)), timeout=5.0)
-        except TypeError:
-            response = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=5.0)
+        response = await _llm_generate(state, prompt, config=LLMConfig(
+            temperature=float(os.getenv("HARNESS_LLM_TEMPERATURE", "0")), max_tokens=1024), timeout_seconds=5.0)
+        if response is None:
+            return []
         proposed = _extract_json_object(response.content)
         if isinstance(proposed, list):
             proposed = {"action": "query", "queries": proposed}
@@ -472,6 +530,12 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             compile_sql(query_id, params)
             safe.append({"query_id": query_id, "params": params,
                          "purpose": str(item.get("reason") or "collect evidence")[:200],
+                         "action_type": "catalog_query",
+                         "evidence_goal": str(item.get("evidence_goal") or item.get("reason") or "补充测量证据")[:200],
+                         "estimated_cost": item.get("estimated_cost", "low") if item.get("estimated_cost") in {"low", "medium", "high"} else "low",
+                         "depends_on": [str(x) for x in item.get("depends_on", [])][:4] if isinstance(item.get("depends_on", []), list) else [],
+                         "stop_condition": str(item.get("stop_condition"))[:200] if item.get("stop_condition") else None,
+                         "rationale": str(item.get("rationale") or item.get("reason") or "")[:300],
                          "expected_information_gain": item.get("expected_information_gain", "medium")
                          if item.get("expected_information_gain") in {"high", "medium", "low"} else "medium"})
             if len(safe) == 1:
@@ -495,7 +559,6 @@ async def _llm_semantic_critic(state: Dict[str, Any], facts: List[Dict[str, Any]
     if critic_mode != "always" and not is_complex:
         return None
     try:
-        from src.llm import get_llm_gateway, LLMConfig
         prompt = (
             "你是网络分析证据完整性 Critic。只输出 JSON 对象，格式为 "
             '{"missing_requirements":["..."],"coverage":"complete|partial","confidence":0.0}。'
@@ -506,11 +569,10 @@ async def _llm_semantic_critic(state: Dict[str, Any], facts: List[Dict[str, Any]
             f"\nVerifiedFacts={json.dumps(facts, ensure_ascii=False, default=str)[:6000]}"
             f"\nMeasurementEvidence={json.dumps(state.get('execution', {}).get('evidence', []), ensure_ascii=False, default=str)[:6000]}"
         )
-        try:
-            response = await asyncio.wait_for(get_llm_gateway().generate(prompt, config=LLMConfig(
-                temperature=0, max_tokens=512)), timeout=5.0)
-        except TypeError:
-            response = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=5.0)
+        from src.llm import LLMConfig
+        response = await _llm_generate(state, prompt, config=LLMConfig(temperature=0, max_tokens=512), timeout_seconds=5.0)
+        if response is None:
+            return None
         value = _extract_json_object(response.content)
         if not isinstance(value, dict):
             return None
@@ -746,8 +808,15 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
     semantic_critic = await _llm_semantic_critic(state, facts)
     if semantic_critic and semantic_critic.get("coverage") == "partial":
         coverage_issues.extend(f"语义要求未覆盖: {item}" for item in semantic_critic["missing_requirements"])
+    budget = state.get("budget", {})
+    can_replan = bool(missing) and task.get("kind") == "network_analysis" \
+        and int(state.get("round", 0)) < int(state.get("max_rounds", 4)) \
+        and len(evidence) < int(budget.get("max_queries", 8)) \
+        and time.time() - float(budget.get("started_at", time.time())) < float(budget.get("deadline_seconds", 45))
     if not successful:
         verdict, score = ("PASS", 0.55) if task.get("kind") == "knowledge" else ("ABSTAIN", 0.0)
+    elif can_replan:
+        verdict, score = "REPLAN", 0.55
     elif missing or coverage_issues:
         verdict, score = "PARTIAL", 0.55
     elif has_errors or consistency_issues or freshness_issues or claimability_issues:
@@ -762,9 +831,14 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
                                "claimability": {"ok": not claimability_issues, "issues": claimability_issues},
                                "cross_evidence": cross_evidence,
                                "semantic_critic": semantic_critic or {"status": "disabled"}},
-                    reason="证据足够" if verdict == "PASS" else "仍缺少证明当前结论所需的证据，回答将明确标注限制"))
-    next_node = "synthesizer"
-    return {"verification": verification, "next_node": next_node, "trace": state.get("trace", []) + [_event(state, "verifier", started, llm_used=bool(semantic_critic), reasoning=f"证据校验结果: {verdict}") ]}
+                    reason="证据足够" if verdict == "PASS" else ("存在可补查证据，进入局部重规划" if verdict == "REPLAN" else "仍缺少证明当前结论所需的证据，回答将明确标注限制")))
+    history = list(state.get("replan_history", []))
+    if verdict == "REPLAN":
+        history.append({"round": int(state.get("round", 0)), "missing": [item["query_id"] for item in missing],
+                        "reason": "Verifier hard/semantic checks found actionable missing evidence"})
+    next_node = "planner" if verdict == "REPLAN" else "synthesizer"
+    return {"verification": verification, "next_node": next_node, "replan_history": history,
+            "trace": state.get("trace", []) + [_event(state, "verifier", started, llm_used=bool(semantic_critic), reasoning=f"证据校验结果: {verdict}") ]}
 
 
 async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -811,14 +885,15 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
     if (os.getenv("HARNESS_LLM_ENABLED", "false").lower() == "true"
             and verification.get("verdict") in {"PASS", "PARTIAL"} and claims):
         try:
-            from src.llm import get_llm_gateway
             prompt = ("你是已验证 Claim 的中文叙事渲染器。可以调整顺序、加入过渡句和结论边界，"
                       "但不能增加事实 Claim、数字、对象、因果关系或根因判断。只能输出 JSON 对象："
                       "{\"summary\":\"自然中文总结\",\"claims\":[{\"claim_id\":\"CL1\",\"text\":\"...\"}]}。"
                       "summary 中只能使用 VerifiedClaims 的事实；必须保留所有 claim_id。"
                       f"\nVerifiedClaims={json.dumps(claims, ensure_ascii=False, default=str)}"
                       f"\n用户问题：{state['query']}")
-            llm_result = await asyncio.wait_for(get_llm_gateway().generate(prompt), timeout=10.0)
+            llm_result = await _llm_generate(state, prompt, timeout_seconds=10.0)
+            if llm_result is None:
+                raise RuntimeError("LLM budget exhausted or unavailable")
             rendered = _extract_json_object(llm_result.content)
             if isinstance(rendered, list):
                 rendered = {"summary": "", "claims": rendered}

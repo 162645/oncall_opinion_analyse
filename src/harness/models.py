@@ -30,14 +30,24 @@ class TaskSpec(HarnessModel):
     comparison: Dict[str, Any] = Field(default_factory=dict)
     constraints: List[str] = Field(default_factory=list)
     semantic_requirements: List[str] = Field(default_factory=list)
+    intent_summary: str = ""
+    sub_questions: List[str] = Field(default_factory=list)
+    answer_requirements: List[str] = Field(default_factory=list)
+    ambiguities: List[str] = Field(default_factory=list)
     semantic_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class PlanStep(HarnessModel):
+    action_type: Literal["catalog_query", "generated_query"] = "catalog_query"
     query_id: str
     params: Dict[str, Any] = Field(default_factory=dict)
     purpose: str = "collect evidence"
     expected_information_gain: Literal["high", "medium", "low"] = "medium"
+    estimated_cost: Literal["low", "medium", "high"] = "low"
+    depends_on: List[str] = Field(default_factory=list)
+    evidence_goal: str = ""
+    stop_condition: Optional[str] = None
+    rationale: str = ""
 
 
 class AnalysisPlan(HarnessModel):
@@ -65,7 +75,7 @@ class Evidence(HarnessModel):
 
 
 class Verification(HarnessModel):
-    verdict: Literal["PASS", "PARTIAL", "ABSTAIN"]
+    verdict: Literal["PASS", "REPLAN", "PARTIAL", "ABSTAIN"]
     score: float
     successful_evidence: int
     total_evidence: int
@@ -74,6 +84,41 @@ class Verification(HarnessModel):
     facts: List[Dict[str, Any]] = Field(default_factory=list)
     checks: Dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
+
+
+class RetrievalSource(HarnessModel):
+    source: Literal["skill", "knowledge", "graph", "bm25", "history"]
+    query: str
+    purpose: str = ""
+    priority: Literal["high", "medium", "low"] = "medium"
+
+
+class RetrievalPlan(HarnessModel):
+    need_retrieval: bool = False
+    sources: List[RetrievalSource] = Field(default_factory=list)
+
+
+class PlanningContext(HarnessModel):
+    task_summary: str = ""
+    domain_guidance: List[str] = Field(default_factory=list)
+    historical_context: List[str] = Field(default_factory=list)
+    entity_context: List[str] = Field(default_factory=list)
+    known_facts: List[str] = Field(default_factory=list)
+    unknowns: List[str] = Field(default_factory=list)
+    hypotheses: List[str] = Field(default_factory=list)
+    available_capabilities: List[str] = Field(default_factory=list)
+    constraints: List[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class SemanticReview(HarnessModel):
+    answered_requirements: List[str] = Field(default_factory=list)
+    missing_requirements: List[str] = Field(default_factory=list)
+    supported_claims: List[str] = Field(default_factory=list)
+    unsupported_claims: List[str] = Field(default_factory=list)
+    uncertainty: List[str] = Field(default_factory=list)
+    recommended_next_objective: Optional[str] = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 def to_dict(value: Any) -> Dict[str, Any]:
