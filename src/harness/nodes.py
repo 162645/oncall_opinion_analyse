@@ -156,8 +156,59 @@ async def _llm_generate(state: Dict[str, Any], prompt: str, *, config: Any = Non
         usage["tokens_out"] = int(usage.get("tokens_out", 0)) + int(response_usage.get("completion_tokens", 0))
         return response
     except Exception:
-        # LLM is an enhancement; deterministic guards remain authoritative.
         return None
+
+
+async def _llm_context_plan(state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Decide whether context is useful and which bounded sources to query."""
+    if os.getenv("HARNESS_CONTEXT_LLM_ENABLED", "false").lower() != "true":
+        return None
+    prompt = (
+        "你是网络分析 Context Orchestrator。只输出 JSON，不要 Markdown。"
+        "格式为 {need_retrieval:boolean,sources:[{source:skill|knowledge|graph|bm25|history,query,purpose,priority:high|medium|low}]}。"
+        "简单事实查询可以返回 need_retrieval=false；最多返回 3 个来源。"
+        "Context 只能辅助规划，不能作为网络测量事实。"
+        f"\nUserQuery={state.get('query','')}\nTaskSpec={json.dumps(task, ensure_ascii=False, default=str)}"
+    )
+    from src.llm import LLMConfig
+    response = await _llm_generate(state, prompt, config=LLMConfig(temperature=0, max_tokens=512), timeout_seconds=5.0)
+    if response is None:
+        return None
+    value = _extract_json_object(response.content)
+    if not isinstance(value, dict):
+        return None
+    sources = []
+    for item in value.get("sources", [])[:3] if isinstance(value.get("sources"), list) else []:
+        if not isinstance(item, dict) or item.get("source") not in {"skill", "knowledge", "graph", "bm25", "history"}:
+            continue
+        sources.append({"source": item["source"], "query": str(item.get("query") or state.get("query", ""))[:300],
+                        "purpose": str(item.get("purpose") or "辅助规划")[:200],
+                        "priority": item.get("priority") if item.get("priority") in {"high", "medium", "low"} else "medium"})
+    return {"need_retrieval": bool(value.get("need_retrieval", bool(sources))), "sources": sources}
+
+
+async def _llm_context_synthesis(state: Dict[str, Any], context_data: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Compress retrieved context; never promotes it to measurement facts."""
+    if os.getenv("HARNESS_CONTEXT_LLM_ENABLED", "false").lower() != "true":
+        return None
+    prompt = (
+        "你是网络分析 Context Synthesizer。只输出 JSON，不要 Markdown，字段为 "
+        "domain_guidance,historical_context,entity_context,known_facts,unknowns,hypotheses,constraints。"
+        "每个字段都是最多 3 条字符串。known_facts 不得写网络测量事实；只能写检索得到的背景。"
+        f"\nTask={json.dumps(state.get('task', {}), ensure_ascii=False, default=str)}"
+        f"\nRetrievedContext={json.dumps({k: context_data.get(k, []) for k in ('knowledge','skill_matches','graph_context')}, ensure_ascii=False, default=str)[:9000]}"
+    )
+    from src.llm import LLMConfig
+    response = await _llm_generate(state, prompt, config=LLMConfig(temperature=0, max_tokens=768), timeout_seconds=5.0)
+    if response is None:
+        return None
+    value = _extract_json_object(response.content)
+    if not isinstance(value, dict):
+        return None
+    clean = {}
+    for key in ("domain_guidance", "historical_context", "entity_context", "known_facts", "unknowns", "hypotheses", "constraints"):
+        clean[key] = [str(x)[:300] for x in (value.get(key) or []) if str(x).strip()][:3]
+    return clean
 
 
 def _region(query: str) -> str | None:
@@ -312,6 +363,10 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
     needs_context = (task.get("kind") == "knowledge" or task.get("planning_mode") == "long_tail"
                      or len(task.get("semantic_requirements", [])) >= 2
                      or len(task.get("analysis_dimensions", [])) >= 2)
+    llm_retrieval_plan = await _llm_context_plan(state, task) if needs_context else None
+    if llm_retrieval_plan is not None:
+        needs_context = llm_retrieval_plan["need_retrieval"]
+        context_data["retrieval_plan"] = llm_retrieval_plan
     if task.get("kind") in {"knowledge", "network_analysis"} and needs_context:
         context_data["retrieval_plan"] = {"need_retrieval": True, "sources": [
             {"source": "knowledge", "query": state["query"], "purpose": "补充领域分析约束", "priority": "high"},
@@ -350,14 +405,16 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
                 context_data["graph_context"] = graph_matches
         except Exception as exc:
             context_data["graph_error"] = str(exc)
+    synthesized = await _llm_context_synthesis(state, context_data) if needs_context else None
+    synthesized = synthesized or {}
     context_data["planning_context"] = to_dict(PlanningContext(
         task_summary=task.get("intent_summary", state.get("query", "")),
-        domain_guidance=[item.get("content", "")[:240] for item in context_data.get("knowledge", [])[:3]],
-        historical_context=[str(item)[:240] for item in context_data.get("graph_context", [])[:3]],
-        entity_context=[str(item.get("name", "")) for item in context_data.get("skill_matches", [])[:2]],
-        known_facts=[], unknowns=list(task.get("ambiguities", [])),
-        hypotheses=[], available_capabilities=[item["query_id"] for item in context_data["catalog"]],
-        constraints=["上下文只能影响规划，不构成测量事实", "最终 Claim 必须绑定 Measurement Evidence"],
+        domain_guidance=synthesized.get("domain_guidance") or [item.get("content", "")[:240] for item in context_data.get("knowledge", [])[:3]],
+        historical_context=synthesized.get("historical_context") or [str(item)[:240] for item in context_data.get("graph_context", [])[:3]],
+        entity_context=synthesized.get("entity_context") or [str(item.get("name", "")) for item in context_data.get("skill_matches", [])[:2]],
+        known_facts=synthesized.get("known_facts", []), unknowns=synthesized.get("unknowns") or list(task.get("ambiguities", [])),
+        hypotheses=synthesized.get("hypotheses", []), available_capabilities=[item["query_id"] for item in context_data["catalog"]],
+        constraints=list(dict.fromkeys((synthesized.get("constraints") or []) + ["上下文只能影响规划，不构成测量事实", "最终 Claim 必须绑定 Measurement Evidence"])),
         confidence=0.7 if context_data.get("retrieval_plan", {}).get("need_retrieval") else 1.0,
     ))
     return {"context": context_data, "next_node": "planner", "trace": state.get("trace", []) + [_event(state, "context", started, reasoning="完成上下文需求判断、检索与 PlanningContext 压缩") ]}
@@ -477,7 +534,6 @@ def _renderer_bidirectionally_grounded(claims: List[Dict[str, Any]], rendered: s
 async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Ask an LLM for a plan, then accept only catalog-valid primitives."""
     try:
-        from src.llm import get_llm_gateway
         task = state.get("task", {})
         context = state.get("context", {})
         evidence = state.get("execution", {}).get("evidence", [])
@@ -510,8 +566,11 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not isinstance(proposed_queries, list):
             return []
         observed = {item.get("query_id") for item in evidence if item.get("status") == "observed"}
+        # The LLM may choose any registered primitive. The deterministic
+        # recipe is a prior, not an allow-list; Plan Guard remains the final
+        # authority over query id, schema and SQL compilation.
         candidate_steps = _steps(task, state.get("execution", {}), state.get("verification", {}))
-        candidate_ids = {item.get("query_id") for item in candidate_steps}
+        candidate_ids = set(CATALOG) - observed
         safe = []
         for item in proposed_queries[:2]:
             if not isinstance(item, dict) or item.get("query_id") not in CATALOG:

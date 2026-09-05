@@ -3,7 +3,7 @@
 import pytest
 
 from src.harness.catalog import CATALOG, compile_sql, read_sql
-from src.harness.nodes import understand, planner, executor, synthesizer, _steps, _chart_specs
+from src.harness.nodes import understand, planner, executor, synthesizer, context, _steps, _chart_specs, _llm_generate
 from src.harness.ledger import EvidenceLedger
 
 
@@ -26,6 +26,26 @@ async def test_understand_does_not_treat_metric_as_region():
 async def test_baseline_intent_survives_task_contract():
     update = await understand({"query": "US 最近 24 小时延迟相比之前是否变差", "trace": []})
     assert update["task"]["needs_baseline"] is True
+
+
+@pytest.mark.asyncio
+async def test_simple_context_query_skips_retrieval():
+    update = await context({
+        "query": "JP 最近 24 小时 P95 是多少", "task": {"kind": "network_analysis", "region": "JP",
+        "metric": "p95", "goal": "describe", "planning_mode": "recipe", "semantic_requirements": [],
+        "analysis_dimensions": [], "intent_summary": "查看当前指标"}, "trace": []})
+    assert update["context"]["retrieval_plan"]["need_retrieval"] is False
+    assert update["context"]["planning_context"]["constraints"]
+
+
+@pytest.mark.asyncio
+async def test_llm_budget_blocks_calls_before_gateway(monkeypatch):
+    class ExplodingGateway:
+        async def generate(self, *_args, **_kwargs):
+            raise AssertionError("budget should block the gateway")
+    monkeypatch.setattr("src.llm.get_llm_gateway", lambda: ExplodingGateway())
+    result = await _llm_generate({"budget": {"max_llm_calls": 0, "max_llm_tokens": 100}, "llm_usage": {}}, "test")
+    assert result is None
 
 
 @pytest.mark.asyncio

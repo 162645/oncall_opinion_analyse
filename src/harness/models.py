@@ -121,6 +121,32 @@ class SemanticReview(HarnessModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class ExecutionResult(HarnessModel):
+    status: Literal["observed", "unavailable", "failed"]
+    data: Any = None
+    evidence_id: Optional[str] = None
+    latency_ms: int = 0
+    row_count: int = 0
+    data_quality: str = "unknown"
+    error_kind: Optional[str] = None
+    retryable: bool = False
+    truncated: bool = False
+    query_cost: Optional[float] = None
+    attempt: int = 1
+
+
+class QueryIR(HarnessModel):
+    """Safe intermediate representation for future long-tail queries."""
+    table: str
+    dimensions: List[str] = Field(default_factory=list)
+    metrics: List[Dict[str, Any]] = Field(default_factory=list)
+    filters: Dict[str, Any] = Field(default_factory=dict)
+    group_by: List[str] = Field(default_factory=list)
+    order_by: List[str] = Field(default_factory=list)
+    limit: int = Field(default=100, ge=1, le=1000)
+    time_range: Optional[TimeRange] = None
+
+
 def to_dict(value: Any) -> Dict[str, Any]:
     """Serialize a contract for LangGraph state/checkpoint storage."""
     if isinstance(value, BaseModel):
