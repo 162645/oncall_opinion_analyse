@@ -38,8 +38,12 @@ def test_eval_matrix_and_strategy_comparison_are_available():
     assert set(result) == {"harness", "react"}
 
 
-def test_replay_fixture_is_injected_into_real_harness():
+def test_replay_fixture_is_injected_into_real_harness(monkeypatch):
     import asyncio
+    # Replay contract tests must be deterministic even when a developer's
+    # shell has the production LLM flags enabled.
+    monkeypatch.setenv("HARNESS_LLM_ENABLED", "false")
+    monkeypatch.setenv("HARNESS_PLANNER_ENABLED", "false")
     fixture = {"ping.summary": {"statistics": [{"total_samples": 100, "valid_samples": 100,
         "mean_rtt": 10, "median_rtt": 10, "p95_rtt": 20, "p99_rtt": 30}]}}
     result = asyncio.run(run_harness_replay({"case_id": "replay-1", "query": "US RTT"}, fixture))
