@@ -5,6 +5,8 @@ import pytest
 from src.harness.catalog import CATALOG, compile_sql, read_sql
 from src.harness.nodes import understand, planner, executor, synthesizer, context, _steps, _chart_specs, _llm_generate
 from src.harness.ledger import EvidenceLedger
+from src.harness.models import QueryIR, TimeRange
+from src.harness.query_ir import compile_query_ir, validate_query_ir
 
 
 @pytest.mark.asyncio
@@ -136,6 +138,18 @@ def test_prefix_query_keeps_anomalous_asn_scope():
         "end_time": "2026-01-02T00:00:00+00:00"})
     assert "ip_asn = %(asn)s" in sql
     assert bindings["asn"] == 64500
+
+
+def test_query_ir_compiles_only_allowlisted_identifiers():
+    ir = QueryIR(table="ping_measurements", dimensions=["hour", "ip_asn"],
+                 metrics=[{"function": "quantile", "field": "rtt_ms", "percentile": 0.95}],
+                 filters={"region": "UKRAINE"}, group_by=["hour", "ip_asn"],
+                 time_range=TimeRange(start_time="2026-01-01T00:00:00+00:00", end_time="2026-01-02T00:00:00+00:00"))
+    sql, bindings = compile_query_ir(ir)
+    assert "UKRAINE__ping" in sql and "%(start_time)s" in sql
+    assert "rtt_ms" in sql and bindings["limit"] == 100
+    with pytest.raises(ValueError):
+        validate_query_ir(ir.model_copy(update={"filters": {"region": "US;DROP"}}))
 
 
 @pytest.mark.asyncio
