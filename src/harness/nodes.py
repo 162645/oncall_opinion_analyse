@@ -127,8 +127,13 @@ REGION_ALIASES = {
 
 
 def _event(state: Dict[str, Any], node: str, started: float, status: str = "success", **extra: Any) -> Dict[str, Any]:
-    return {"step_id": len(state.get("trace", [])) + 1, "step_type": "harness_node", "agent_name": node,
-            "action": node, "duration_ms": int((time.perf_counter() - started) * 1000), "status": status, **extra}
+    event = {"step_id": len(state.get("trace", [])) + 1, "step_type": "harness_node", "agent_name": node,
+             "action": node, "duration_ms": int((time.perf_counter() - started) * 1000), "status": status, **extra}
+    if event.get("llm_used"):
+        event.setdefault("model", os.getenv("LLM_MODEL", "deepseek-chat"))
+        event.setdefault("prompt_version", os.getenv("HARNESS_PROMPT_VERSION", "v1"))
+        event.setdefault("token_usage", dict(state.get("llm_usage", {})))
+    return event
 
 
 async def _llm_generate(state: Dict[str, Any], prompt: str, *, config: Any = None,
