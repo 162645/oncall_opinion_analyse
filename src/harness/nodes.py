@@ -631,7 +631,9 @@ async def _llm_semantic_critic(state: Dict[str, Any], facts: List[Dict[str, Any]
     try:
         prompt = (
             "你是网络分析证据完整性 Critic。只输出 JSON 对象，格式为 "
-            '{"missing_requirements":["..."],"coverage":"complete|partial","confidence":0.0}。'
+            '{"answered_requirements":["..."],"missing_requirements":["..."],"supported_claims":["..."],'
+            '"unsupported_claims":["..."],"uncertainty":["..."],"recommended_next_objective":"...",'
+            '"coverage":"complete|partial","confidence":0.0}。'
             "只判断用户问题中的语义要求是否被已有测量证据覆盖；不要创造事实、数字、Evidence ID，"
             "不要判断网络因果，不要提出 Catalog 之外的查询。"
             f"\n用户问题={state.get('query', '')}"
@@ -648,8 +650,15 @@ async def _llm_semantic_critic(state: Dict[str, Any], facts: List[Dict[str, Any]
             return None
         missing = [str(item)[:120] for item in (value.get("missing_requirements") or []) if str(item).strip()][:8]
         coverage = value.get("coverage") if value.get("coverage") in {"complete", "partial"} else "complete"
-        return {"missing_requirements": missing, "coverage": coverage,
-                "confidence": max(0.0, min(1.0, float(value.get("confidence", 0.0))))}
+        review = SemanticReview(
+            answered_requirements=[str(item)[:160] for item in (value.get("answered_requirements") or []) if str(item).strip()][:8],
+            missing_requirements=missing,
+            supported_claims=[str(item)[:160] for item in (value.get("supported_claims") or []) if str(item).strip()][:8],
+            unsupported_claims=[str(item)[:160] for item in (value.get("unsupported_claims") or []) if str(item).strip()][:8],
+            uncertainty=[str(item)[:160] for item in (value.get("uncertainty") or []) if str(item).strip()][:8],
+            recommended_next_objective=str(value.get("recommended_next_objective"))[:200] if value.get("recommended_next_objective") else None,
+            confidence=max(0.0, min(1.0, float(value.get("confidence", 0.0)))))
+        return {**review.model_dump(mode="json"), "coverage": coverage}
     except Exception:
         return None
 
