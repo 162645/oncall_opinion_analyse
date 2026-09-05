@@ -679,7 +679,7 @@ async def _execute_with_runtime(state: Dict[str, Any], runtime: ToolRuntime) -> 
     results = list(previous_execution.get("results", []))
     evidence = list(previous_execution.get("evidence", []))
     mcp = CatalogMCPAdapter(runtime)
-    for step in state.get("plan", {}).get("steps", []):
+    async def execute_step(step: Dict[str, Any]) -> Dict[str, Any]:
         query_id, params = step["query_id"], step["params"]
         begin = time.perf_counter()
         try:
@@ -703,13 +703,27 @@ async def _execute_with_runtime(state: Dict[str, Any], runtime: ToolRuntime) -> 
             item = {"query_id": query_id, "success": False, "data": None, "error": str(exc),
                     "error_kind": "timeout" if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) else "permanent", "attempts": 1,
                     "duration_ms": int((time.perf_counter() - begin) * 1000)}
-        results.append(item)
-        prior_attempts = sum(1 for old in evidence if old.get("query_id") == query_id)
-        evidence.append({"evidence_id": f"E{len(evidence) + 1}", "query_id": query_id, "status": "observed" if item["success"] else "unavailable",
-                         "kind": "measurement", "data": item["data"], "error": item["error"], "source": "clickhouse",
-                         "params": params, "observed_at": datetime.now(timezone.utc).isoformat(),
-                         "trace_id": state.get("run_id", ""), "error_kind": item.get("error_kind"),
-                         "attempts": item.get("attempts", 0), "attempt": prior_attempts + 1})
+        return item
+
+    pending = list(state.get("plan", {}).get("steps", []))
+    completed = {item.get("query_id") for item in evidence}
+    while pending:
+        ready = [step for step in pending if set(step.get("depends_on", [])) <= completed]
+        if not ready:
+            # A malformed dependency graph must not deadlock the Harness.
+            ready = [pending[0]]
+        batch = await asyncio.gather(*(execute_step(step) for step in ready))
+        for step, item in zip(ready, batch):
+            query_id, params = step["query_id"], step["params"]
+            results.append(item)
+            completed.add(query_id)
+            pending.remove(step)
+            prior_attempts = sum(1 for old in evidence if old.get("query_id") == query_id)
+            evidence.append({"evidence_id": f"E{len(evidence) + 1}", "query_id": query_id, "status": "observed" if item["success"] else "unavailable",
+                             "kind": "measurement", "data": item["data"], "error": item["error"], "source": "clickhouse",
+                             "params": params, "observed_at": datetime.now(timezone.utc).isoformat(),
+                             "trace_id": state.get("run_id", ""), "error_kind": item.get("error_kind"),
+                             "attempts": item.get("attempts", 0), "attempt": prior_attempts + 1})
     execution = {"results": results, "evidence": evidence}
     return {"execution": execution, "next_node": "verifier", "trace": state.get("trace", []) + [_event(state, "executor", started, reasoning=f"执行 {len(results)} 个目录查询并记录证据") ]}
 
