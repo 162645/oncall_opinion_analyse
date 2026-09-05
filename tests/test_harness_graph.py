@@ -44,15 +44,14 @@ def test_diagnosis_plan_drills_down_in_stages():
     assert [step["query_id"] for step in _steps(path_task, prefix)] == ["trace.path_change"]
 
 
-def test_planner_consumes_verifier_missing_evidence():
+def test_recipe_fallback_does_not_execute_verifier_query_ids_directly():
     from src.harness.nodes import _steps
     task = {"kind": "network_analysis", "region": "UKRAINE", "goal": "diagnose",
             "time_range": {"start_time": "a", "end_time": "b"}}
     steps = _steps(task, {"evidence": []}, {"missing_evidence": [
         {"query_id": "trace.paths", "reason": "confirm path-level cause", "priority": "high"},
     ]})
-    assert [step["query_id"] for step in steps] == ["trace.paths"]
-    assert steps[0]["params"]["query_type"] == "trace_stats"
+    assert [step["query_id"] for step in steps] == ["ping.summary", "ping.trend"]
 
 
 def test_default_budget_allows_four_stage_drilldown():
@@ -63,11 +62,20 @@ def test_default_budget_allows_four_stage_drilldown():
 def test_verifier_can_replan_after_round_three():
     harness = EvidenceDrivenHarness()
     assert harness._after_verifier({
-        "verification": {"verdict": "PARTIAL"},
+        "verification": {"verdict": "REPLAN"},
         "task": {"kind": "network_analysis"},
         "plan": {"steps": [{"query_id": "trace.paths"}]},
         "round": 3, "max_rounds": 4,
     }) == "planner"
+
+
+def test_only_replan_routes_back_to_planner():
+    harness = EvidenceDrivenHarness()
+    base = {"task": {"kind": "network_analysis"}, "plan": {"steps": [{"query_id": "ping.summary"}]},
+            "round": 1, "max_rounds": 4, "budget": {"max_queries": 8, "max_tool_failures": 3,
+            "deadline_seconds": 45, "started_at": 0}}
+    assert harness._after_verifier({**base, "verification": {"verdict": "PARTIAL"}}) == "synthesizer"
+    assert harness._after_verifier({**base, "verification": {"verdict": "ABSTAIN"}}) == "synthesizer"
 
 
 def test_harness_owns_one_runtime_for_all_graph_rounds():
@@ -99,9 +107,9 @@ async def test_full_four_round_drilldown_with_fake_clickhouse(monkeypatch):
     )
     assert result.success is True
     assert result.state["round"] == 4
-    assert result.state["verification"]["verdict"] == "PASS"
+    assert result.state["verification"]["verdict"] == "PARTIAL"
     assert {item["query_id"] for item in result.state["execution"]["evidence"]} >= {
-        "ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24", "trace.paths", "trace.path_change"
+        "ping.summary", "ping.trend", "ping.by_asn", "ping.by_prefix24", "trace.path_change"
     }
     evidence_ids = {item["evidence_id"] for item in result.chart_data["evidence"]}
     assert result.chart_data["claims"]

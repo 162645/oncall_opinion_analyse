@@ -53,6 +53,6 @@ def create_initial_state(query: str, session_id: str, run_id: str, metadata: Opt
                    "started_at": time.time()},
         "reasoning_context": {"current_goal": "", "known_facts_summary": [], "unknowns": [],
                                "current_hypotheses": [], "last_decision_reason": ""},
-        "llm_usage": {"calls_used": 0, "tokens_in": 0, "tokens_out": 0, "estimated_cost": 0.0},
+        "llm_usage": {"calls_used": 0, "tokens_in": 0, "tokens_out": 0, "estimated_cost": 0.0, "calls": []},
         "replan_history": [],
     }

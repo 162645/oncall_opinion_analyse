@@ -35,14 +35,16 @@ def load_cases(path: Path) -> list[NetworkEvalCase]:
 
 
 async def run(cases: list[NetworkEvalCase], fixture_dir: Path, case_rows: list[dict[str, Any]],
-              *, react_max_tool_calls: int = 8) -> dict[str, Any]:
+              *, react_max_tool_calls: int = 8, react_policy: str = "llm") -> dict[str, Any]:
     harness_results, react_results, raw = [], [], []
     for case in cases:
         row = next(x for x in case_rows if x["case_id"] == case.case_id)
-        fixture = json.loads((fixture_dir / row["fixture_path"]).read_text(encoding="utf-8"))
+        fixture = json.loads((fixture_dir / row.get("fixture_path", "fixture_seed.json")).read_text(encoding="utf-8"))
         replay = await run_harness_replay({"case_id": case.case_id, "query": case.query}, fixture)
         react = await run_react_replay({"case_id": case.case_id, "query": case.query}, fixture,
-                                       max_tool_calls=react_max_tool_calls)
+                                       max_tool_calls=react_max_tool_calls,
+                                       force_llm=react_policy == "llm",
+                                       model_policy=None if react_policy == "llm" else __import__("src.eval.runners.react_runner", fromlist=["deterministic_policy"]).deterministic_policy)
         h, r = score_case(case, replay["state"]), score_case(case, react["state"])
         harness_results.append(h); react_results.append(r)
         raw.append({"case_id": case.case_id, "case_type": case.case_type, "expected_verdict": case.expected_verdict,
@@ -85,7 +87,8 @@ async def run(cases: list[NetworkEvalCase], fixture_dir: Path, case_rows: list[d
     react_summary = {**evaluate_cases(react_results), **operational(react_results, "react_calls"), **diagnostics("react")}
     return {"summary": {"harness": harness_summary, "free_react": react_summary},
             "evaluation_config": {
-                "baseline": "deepseek_free_react",
+                "baseline": "deepseek_free_react" if react_policy == "llm" else "deterministic_observation_policy",
+                "react_policy": react_policy,
                 "react_max_tool_calls": react_max_tool_calls,
                 "ground_truth_hidden_from_baseline": True,
                 "note": "The baseline shares the catalog/tool schemas for capability parity; only the Harness has guarded planning and verification."
@@ -103,6 +106,8 @@ def main() -> None:
                         help="只运行前 N 个 Case，避免开发阶段意外触发全量 API 费用")
     parser.add_argument("--react-max-tool-calls", type=int, default=8,
                         help="Free ReAct 每个 Case 的最大工具调用次数")
+    parser.add_argument("--react-policy", choices=("llm", "deterministic"), default="llm",
+                        help="基线策略；正式对比使用 llm，deterministic 仅用于离线 smoke")
     args = parser.parse_args()
     rows = [json.loads(line) for line in args.cases.read_text(encoding="utf-8").splitlines() if line.strip()]
     cases = load_cases(args.cases)
@@ -114,15 +119,18 @@ def main() -> None:
         rows = [row for row in rows if row["case_id"] in selected]
     if args.fixture_dir:
         report = asyncio.run(run(cases, args.fixture_dir, rows,
-                                 react_max_tool_calls=args.react_max_tool_calls))
+                                 react_max_tool_calls=args.react_max_tool_calls,
+                                 react_policy=args.react_policy))
     else:
         # Retain the original one-fixture mode for small smoke experiments.
         fixture = json.loads(args.fixture.read_text(encoding="utf-8"))
         report = asyncio.run(run(cases, args.cases.parent,
                                  [{"case_id": c.case_id, "fixture_path": args.fixture.name} for c in cases],
-                                 react_max_tool_calls=args.react_max_tool_calls))
+                                 react_max_tool_calls=args.react_max_tool_calls,
+                                 react_policy=args.react_policy))
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered + "\n", encoding="utf-8")
         summary = report["summary"]
         md = ["# Agent Replay Comparison", "", "| Metric | Free ReAct | Evidence Harness |", "|---|---:|---:|",
@@ -139,7 +147,7 @@ def main() -> None:
               f"| Evidence coverage / tool call | {summary['free_react']['evidence_coverage_per_tool_call']:.3f} | {summary['harness']['evidence_coverage_per_tool_call']:.3f} |",
               "", "The baseline is a DeepSeek LLM ReAct policy; Harness uses the same DeepSeek gateway with guarded planning and evidence verification.",
               "Raw per-case results are stored in the JSON report.",
-              f"Evaluation config: Free ReAct max tool calls = {report['evaluation_config']['react_max_tool_calls']}; no Harness planning/verifier constraints are applied to the baseline."]
+              f"Evaluation config: policy = {report['evaluation_config']['react_policy']}; Free ReAct max tool calls = {report['evaluation_config']['react_max_tool_calls']}; no Harness planning/verifier constraints are applied to the baseline."]
         args.output.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print(rendered)
 

@@ -36,6 +36,7 @@ PYTHONPATH=. python -m scripts.run_agent_eval \
   --cases eval_data/network/cases.jsonl \
   --fixture-dir eval_data/network \
   --max-cases 5 \
+  --react-policy llm \
   --react-max-tool-calls 3 \
   --output artifacts/eval/agent_smoke.json
 ```

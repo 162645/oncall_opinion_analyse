@@ -152,6 +152,13 @@ def test_query_ir_compiles_only_allowlisted_identifiers():
         validate_query_ir(ir.model_copy(update={"filters": {"region": "US;DROP"}}))
 
 
+def test_query_ir_requires_explicit_time_range():
+    from src.harness.models import QueryIR
+    with pytest.raises(ValueError, match="time range"):
+        validate_query_ir(QueryIR(table="ping_measurements", metrics=[{"function": "count", "field": "rtt_ms"}],
+                                  filters={"region": "UKRAINE"}))
+
+
 @pytest.mark.asyncio
 async def test_executor_maps_clickhouse_rows_to_catalog_contract(monkeypatch):
     class FakeClient:
@@ -222,7 +229,7 @@ async def test_verifier_reports_structured_missing_evidence_and_invariants():
                                       "data": {"trend_data": [{"time_bucket": "t", "median_rtt": 90, "p95_rtt": 40}]}}]},
         "trace": [],
     })
-    assert update["verification"]["missing_evidence"][0]["query_id"] == "ping.by_asn"
+    assert update["verification"]["missing_evidence"][0]["objective"] == "判断异常是否集中于特定 ASN"
     assert update["verification"]["checks"]["consistency"]["ok"] is False
     assert update["verification"]["facts"] == []
 
@@ -253,7 +260,7 @@ async def test_long_tail_planner_is_guarded_to_catalog(monkeypatch):
     monkeypatch.setattr("src.llm.get_llm_gateway", lambda: FakeGateway())
     update = await planner({
         "task": {"kind": "network_analysis", "region": "UKRAINE", "goal": "describe",
-                 "planning_mode": "long_tail", "time_range": {"start_time": "a", "end_time": "b"}},
+                 "planning_mode": "long_tail", "time_range": {"start_time": "2026-01-01T00:00:00+00:00", "end_time": "2026-01-02T00:00:00+00:00"}},
         "context": {"catalog": list(CATALOG)}, "execution": {"evidence": []}, "verification": {},
         "round": 0, "trace": [],
     })

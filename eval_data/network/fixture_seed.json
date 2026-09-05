@@ -1,0 +1,8 @@
+{
+  "ping.summary": {"statistics": [{"total_samples": 100, "valid_samples": 100, "mean_rtt": 100.0, "median_rtt": 95.0, "p95_rtt": 180.0, "p99_rtt": 220.0}]},
+  "ping.trend": {"trend_data": [{"time_bucket": "2026-01-01 00:00:00", "sample_count": 50, "valid_samples": 50, "mean_rtt": 80.0, "median_rtt": 75.0, "p95_rtt": 90.0}, {"time_bucket": "2026-01-01 01:00:00", "sample_count": 50, "valid_samples": 50, "mean_rtt": 160.0, "median_rtt": 150.0, "p95_rtt": 180.0}]},
+  "ping.by_asn": {"statistics": [{"ip_asn": 64500, "total_samples": 60, "valid_samples": 60, "mean_rtt": 160.0, "p95_rtt": 240.0}, {"ip_asn": 64501, "total_samples": 40, "valid_samples": 40, "mean_rtt": 60.0, "p95_rtt": 80.0}]},
+  "ping.by_prefix24": {"statistics": [{"prefix24": "203.0.113.0/24", "total_samples": 60, "valid_samples": 60, "mean_rtt": 160.0, "p95_rtt": 240.0}]},
+  "trace.paths": {"paths": [{"ip_path_hash": 123, "occurrence_count": 50, "avg_hop_count": 8.0, "reached_count": 49}]},
+  "trace.path_change": {"path_changes": [{"time_bucket": "2026-01-01 00:00:00", "path_count": 1, "sample_count": 50, "dominant_path_hash": 123}, {"time_bucket": "2026-01-01 01:00:00", "path_count": 2, "sample_count": 50, "dominant_path_hash": 456}]}
+}

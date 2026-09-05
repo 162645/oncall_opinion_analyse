@@ -16,6 +16,7 @@ from .mcp_adapter import CatalogMCPAdapter
 from .models import AnalysisPlan, ExecutionResult, PlanningContext, QueryIR, RetrievalPlan, SemanticReview, TaskSpec, Verification, to_dict
 from .query_ir import compile_query_ir, validate_query_ir
 from .prompts import PROMPT_VERSION
+from .prompts.templates import planner_prompt, renderer_prompt
 
 
 def _catalog_runtime() -> ToolRuntime:
@@ -153,7 +154,7 @@ def _event(state: Dict[str, Any], node: str, started: float, status: str = "succ
 
 
 async def _llm_generate(state: Dict[str, Any], prompt: str, *, config: Any = None,
-                        timeout_seconds: float = 5.0) -> Any | None:
+                        timeout_seconds: float = 5.0, purpose: str = "unknown") -> Any | None:
     """Shared LLM boundary with per-run call/token budgets.
 
     Nodes may decide what to ask, but no node can bypass the Harness budget.
@@ -165,6 +166,7 @@ async def _llm_generate(state: Dict[str, Any], prompt: str, *, config: Any = Non
         return None
     if int(usage.get("tokens_in", 0)) + int(usage.get("tokens_out", 0)) >= int(budget.get("max_llm_tokens", 12000)):
         return None
+    started = time.perf_counter()
     try:
         from src.llm import get_llm_gateway
         try:
@@ -175,6 +177,11 @@ async def _llm_generate(state: Dict[str, Any], prompt: str, *, config: Any = Non
         usage["calls_used"] = int(usage.get("calls_used", 0)) + 1
         usage["tokens_in"] = int(usage.get("tokens_in", 0)) + int(response_usage.get("prompt_tokens", 0))
         usage["tokens_out"] = int(usage.get("tokens_out", 0)) + int(response_usage.get("completion_tokens", 0))
+        usage.setdefault("calls", []).append({"purpose": purpose, "model": os.getenv("LLM_MODEL", "deepseek-chat"),
+                                               "prompt_version": os.getenv("HARNESS_PROMPT_VERSION", PROMPT_VERSION),
+                                               "latency_ms": round((time.perf_counter() - started) * 1000, 3),
+                                               "prompt_tokens": int(response_usage.get("prompt_tokens", 0)),
+                                               "completion_tokens": int(response_usage.get("completion_tokens", 0))})
         return response
     except Exception:
         return None
@@ -237,6 +244,8 @@ def _region(query: str) -> str | None:
     for alias, value in REGION_ALIASES.items():
         if alias.lower() in lower:
             return value
+    # US/UK are valid region identifiers; do not treat short region codes as
+    # metric/protocol tokens.
     excluded = {"P50", "P90", "P95", "P99", "RTT", "ASN", "IP", "SQL", "HTTP", "TCP", "UDP"}
     match = re.search(r"\b([A-Z][A-Z0-9_-]{2,})\b", query)
     candidate = match.group(1).upper() if match else None
@@ -406,11 +415,21 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
                 f"主动网络测量 {task.get('region', '')} {task.get('metric', 'rtt')} "
                 f"{task.get('goal', 'describe')}：{state['query']}"
             )
-            search = await asyncio.wait_for(get_knowledge_service().search(retrieval_query, top_k=3), timeout=2.0)
-            context_data["knowledge"] = [{"evidence_id": f"K{i + 1}", "content": item.content[:800],
-                                           "score": item.score, "source": item.source,
-                                           "metadata": item.metadata} for i, item in enumerate(search.results)]
-            context_data["data_source"] = "ClickHouse + Qdrant/BM25/Neo4j knowledge context"
+            service = get_knowledge_service()
+            async def retrieve(use_vector: bool, use_keyword: bool):
+                return await asyncio.wait_for(service.search(retrieval_query, top_k=3,
+                                                             use_vector=use_vector, use_keyword=use_keyword), timeout=2.0)
+            if not sources or "knowledge" in sources:
+                search = await retrieve(True, True)
+                context_data["knowledge"] = [{"evidence_id": f"K{i + 1}", "content": item.content[:800],
+                                               "score": item.score, "source": item.source,
+                                               "metadata": item.metadata} for i, item in enumerate(search.results)]
+            if "bm25" in sources:
+                search = await retrieve(False, True)
+                context_data["bm25"] = [{"evidence_id": f"B{i + 1}", "content": item.content[:800],
+                                         "score": item.score, "source": "bm25", "metadata": item.metadata}
+                                        for i, item in enumerate(search.results)]
+            context_data["data_source"] = "ClickHouse + routed knowledge context"
         except Exception as exc:
             context_data["knowledge_error"] = str(exc)
         if not sources or "skill" in sources:
@@ -434,6 +453,9 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
                 context_data["graph_context"] = graph_matches
           except Exception as exc:
             context_data["graph_error"] = str(exc)
+        if "history" in sources:
+            context_data["history"] = []
+            context_data["history_status"] = "not_configured"
     synthesized = await _llm_context_synthesis(state, context_data) if needs_context else None
     synthesized = synthesized or {}
     context_data["planning_context"] = to_dict(PlanningContext(
@@ -460,17 +482,9 @@ def _steps(task: Dict[str, Any], execution: Dict[str, Any], verification: Dict[s
     latest = {item.get("query_id"): item for item in ledger.all()}
     retryable_failed = {query_id for query_id, item in latest.items() if item.get("status") != "observed" and _retryable(item)}
     base = {"region": region, "start_time": tr["start_time"], "end_time": tr["end_time"]}
-    missing_evidence = (verification or {}).get("missing_evidence", [])
-    if missing_evidence:
-        requested = [item.get("query_id") if isinstance(item, dict) else item for item in missing_evidence]
-        prefix = _top_prefix(ledger)
-        asn = _top_asn(ledger)
-        return [{"query_id": query_id, "params": {"query_type": CATALOG[query_id].tool_query_type,
-                                                    **({"interval": "hour"} if query_id == "ping.trend" else {}),
-                                                    **({"prefix24": prefix} if query_id in {"trace.paths", "trace.path_change"} else {}),
-                                                    **({"asn": asn} if query_id == "ping.by_prefix24" and asn else {}), **base}}
-                for query_id in requested if query_id in CATALOG and not ledger.has(query_id)
-                and (not _latest_evidence(ledger, query_id) or _retryable(_latest_evidence(ledger, query_id)))]
+    # Verifier describes missing objectives, never concrete query ids. The
+    # recipe below is only a safe fallback; the LLM Planner owns action
+    # selection when enabled.
     if not execution.get("evidence"):
         initial = [{"query_id": "ping.summary", "params": {"query_type": "ping_stats", **base}},
                    {"query_id": "ping.trend", "params": {"query_type": "ping_trend", "interval": "hour", **base}}]
@@ -553,11 +567,37 @@ def _factual_tokens(text: str) -> set[str]:
     return set(re.findall(r"\d+(?:\.\d+)?|AS\d+|\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}|[A-Z]{2,}", text))
 
 
+def _remaining_budget(state: Dict[str, Any]) -> Dict[str, Any]:
+    budget = state.get("budget", {})
+    usage = state.get("llm_usage", {})
+    evidence = state.get("execution", {}).get("evidence", [])
+    started = float(budget.get("started_at", time.time()))
+    return {"rounds": max(0, int(state.get("max_rounds", 4)) - int(state.get("round", 0))),
+            "queries": max(0, int(budget.get("max_queries", 8)) - len(evidence)),
+            "llm_calls": max(0, int(budget.get("max_llm_calls", 12)) - int(usage.get("calls_used", 0))),
+            "llm_tokens": max(0, int(budget.get("max_llm_tokens", 12000)) - int(usage.get("tokens_in", 0)) - int(usage.get("tokens_out", 0))),
+            "deadline_seconds": max(0.0, float(budget.get("deadline_seconds", 45)) - (time.time() - started))}
+
+
 def _renderer_bidirectionally_grounded(claims: List[Dict[str, Any]], rendered: str) -> bool:
     """Require source facts to survive and reject new numeric/entity facts."""
     source_tokens = set().union(*(_factual_tokens(str(item.get("claim", ""))) for item in claims))
     rendered_tokens = _factual_tokens(rendered)
     return source_tokens.issubset(rendered_tokens) and rendered_tokens.issubset(source_tokens)
+
+
+_CAUSAL_MARKERS = ("导致", "造成", "引起", "根因", "因为", "caused", "cause", "root cause")
+_CORRELATION_MARKERS = ("相关", "重合", "邻近", "correlation", "correlated")
+
+
+def _renderer_causality_safe(claims: List[Dict[str, Any]], rendered: str) -> bool:
+    """Prevent prose from upgrading a correlation fact into causality."""
+    rendered_lower = rendered.lower()
+    for claim in claims:
+        source = str(claim.get("claim", ""))
+        if any(marker in source.lower() for marker in _CORRELATION_MARKERS) and any(marker in rendered_lower for marker in _CAUSAL_MARKERS):
+            return False
+    return True
 
 
 async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -566,21 +606,12 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         task = state.get("task", {})
         context = state.get("context", {})
         evidence = state.get("execution", {}).get("evidence", [])
-        prompt = (
-            "你是网络测量分析 Next-Best-Action Planner。只输出 JSON 对象，不要 Markdown。"
-            "格式为 {action: query|finish, queries: [{query_id, reason, expected_information_gain}]}；"
-            "每轮默认只选 1 个 query，只有明确的并行价值才选 2 个。query_id 只能来自候选 Catalog；禁止 SQL、禁止新增工具。"
-            f"\nTaskSpec={json.dumps(task, ensure_ascii=False, default=str)}"
-            f"\nCatalog={json.dumps(context.get('catalog', []), ensure_ascii=False)}"
-            f"\nRecipeHints={json.dumps(context.get('recipe_hints', {}), ensure_ascii=False)}"
-            f"\nSkillMatches={json.dumps(context.get('skill_matches', [])[:2], ensure_ascii=False, default=str)}"
-            f"\nKnowledgeHints={json.dumps(context.get('knowledge', [])[:3], ensure_ascii=False, default=str)[:4000]}"
-            f"\nGraphHints={json.dumps(context.get('graph_context', [])[:3], ensure_ascii=False, default=str)}"
-            f"\nPlanningContext={json.dumps(context.get('planning_context', {}), ensure_ascii=False, default=str)[:5000]}"
-            f"\nEvidence={json.dumps(evidence, ensure_ascii=False, default=str)[:8000]}"
-            f"\nRecipeCandidate={json.dumps(_steps(task, state.get('execution', {}), state.get('verification', {})), ensure_ascii=False, default=str)}"
-            "\n请选择当前最有价值且尚未成功执行的查询。"
-        )
+        prompt = planner_prompt(
+            query=state.get("query", ""), task=task, context=context, evidence=evidence,
+            missing=state.get("verification", {}).get("replan_objectives", []),
+            budget=_remaining_budget(state),
+            recipe=_steps(task, state.get("execution", {}), state.get("verification", {})),
+            ir_schema=QueryIR.model_json_schema())
         from src.llm import LLMConfig
         response = await _llm_generate(state, prompt, config=LLMConfig(
             temperature=float(os.getenv("HARNESS_LLM_TEMPERATURE", "0")), max_tokens=1024), timeout_seconds=5.0)
@@ -704,15 +735,13 @@ async def planner(state: Dict[str, Any]) -> Dict[str, Any]:
     steps = _steps(task, state.get("execution", {}), verification)
     source, rationale = "recipe", "优先使用经过验证的网络分析配方"
     llm_used = False
-    # Long-tail planning is optional and guarded: the model may choose only
-    # catalog primitives. If it fails validation or is unavailable, the
-    # deterministic recipe remains the safe fallback.
-    planner_refinement = os.getenv("HARNESS_PLANNER_REFINEMENT", "false").lower() == "true"
-    if not verification.get("missing_evidence") and (planner_refinement or task.get("planning_mode") == "long_tail" or os.getenv("HARNESS_PLANNER_MODE", "hybrid") == "llm") \
-            and os.getenv("HARNESS_PLANNER_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true":
+    # Recipe is a prior/fallback. Whenever enabled, the LLM Planner runs on
+    # every round, including REPLAN rounds, and chooses actions itself.
+    planner_enabled = os.getenv("HARNESS_PLANNER_ENABLED", os.getenv("HARNESS_LLM_ENABLED", "false")).lower() == "true"
+    if planner_enabled and (task.get("kind") == "network_analysis" or task.get("planning_mode") == "long_tail"):
         llm_steps = await _llm_plan(state)
         if llm_steps:
-            source = "llm_refined" if planner_refinement else "llm_guarded"
+            source = "llm_guarded"
             steps, rationale = llm_steps, "LLM 基于语义 TaskSpec、Recipe、Context 与已有证据重排查询，经过 Plan Guard 校验"
             llm_used = True
     budget = state.get("budget", {})
@@ -722,7 +751,12 @@ async def planner(state: Dict[str, Any]) -> Dict[str, Any]:
     current_round = int(state.get("round", 0)) + 1
     plan = AnalysisPlan(plan_id=f"network-v1-r{current_round}", round=current_round,
                         steps=steps, source=source, rationale=rationale)
-    return {"round": current_round, "plan": to_dict(plan),
+    reasoning = state.get("reasoning_context", {}).copy()
+    reasoning.update({"current_goal": task.get("intent_summary", state.get("query", "")),
+                      "unknowns": list(state.get("verification", {}).get("missing_requirements", [])),
+                      "last_decision_reason": rationale,
+                      "known_facts_summary": [f.get("fact", "") for f in state.get("verification", {}).get("facts", [])[:6]]})
+    return {"round": current_round, "plan": to_dict(plan), "reasoning_context": reasoning,
             "next_node": "executor", "trace": state.get("trace", []) + [_event(state, "planner", started,
             llm_used=llm_used, reasoning=f"{rationale}；只输出受控 query_id 与类型化参数") ]}
 
@@ -860,13 +894,13 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
     if task.get("kind") == "network_analysis" and task.get("goal") == "diagnose":
         if _needs_asn(task) and not ledger.has("ping.by_asn"):
             coverage_issues.append("缺少 AS 归因证据")
-            missing.append({"query_id": "ping.by_asn", "reason": "attribute latency by ASN", "priority": "high"})
+            missing.append({"objective": "判断异常是否集中于特定 ASN", "evidence_type": "network_attribution", "reason": "attribute latency by ASN", "priority": "high"})
         elif _needs_asn(task):
             asn_rows = (ledger.observed("ping.by_asn")[0].get("data") or {}).get("statistics", [])
             concentrated, asn_rows = _asn_concentration(ledger)
             if concentrated and not ledger.has("ping.by_prefix24"):
                 coverage_issues.append("AS 内部仍缺少 Prefix24 归因")
-                missing.append({"query_id": "ping.by_prefix24", "reason": "localize concentrated ASN anomaly", "priority": "medium"})
+                missing.append({"objective": "在异常 ASN 内定位 Prefix24", "evidence_type": "prefix_attribution", "reason": "localize concentrated ASN anomaly", "priority": "medium"})
             facts.append({"fact_type": "asn_concentration", "status": "present" if concentrated else "absent",
                           "fact": "asn_concentration", "claim": "P95 RTT 差异集中在少数 AS" if concentrated else "未发现明显的 AS 集中现象",
                           "value": asn_rows[:3], "evidence_ids": [ledger.observed("ping.by_asn")[0]["evidence_id"]]})
@@ -876,9 +910,9 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
             # re-plans; only request them when the user asked about paths.
             if ledger.has("ping.by_prefix24") and task.get("wants_path_analysis"):
                 if not ledger.has("trace.paths"):
-                    missing.append({"query_id": "trace.paths", "reason": "confirm path-level evidence", "priority": "medium"})
+                    missing.append({"objective": "获得路径级测量证据", "evidence_type": "path_observation", "reason": "confirm path-level evidence", "priority": "medium"})
                 if not ledger.has("trace.path_change"):
-                    missing.append({"query_id": "trace.path_change", "reason": "correlate path changes with RTT trend", "priority": "medium"})
+                    missing.append({"objective": "判断路径变化与 RTT 异常是否时间相关", "evidence_type": "cross_evidence", "reason": "correlate path changes with RTT trend", "priority": "medium"})
     if ledger.has("ping.by_prefix24"):
         prefix_rows = (ledger.observed("ping.by_prefix24")[0].get("data") or {}).get("statistics", [])
         if prefix_rows:
@@ -952,10 +986,14 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
     if task.get("goal") == "diagnose" and not (set(fact.get("fact") for fact in facts) & diagnostic_facts):
         coverage_issues.append("诊断尚未得到可定位异常或根因方向的事实")
     semantic_critic = await _llm_semantic_critic(state, facts)
+    semantic_missing = []
     if semantic_critic and semantic_critic.get("coverage") == "partial":
-        coverage_issues.extend(f"语义要求未覆盖: {item}" for item in semantic_critic["missing_requirements"])
+        semantic_missing = [{"objective": item, "evidence_type": "semantic_requirement", "priority": "medium"}
+                            for item in semantic_critic["missing_requirements"]]
+        coverage_issues.extend(f"语义要求未覆盖: {item['objective']}" for item in semantic_missing)
+    replan_objectives = missing + semantic_missing
     budget = state.get("budget", {})
-    can_replan = bool(missing) and task.get("kind") == "network_analysis" \
+    can_replan = bool(replan_objectives) and task.get("kind") == "network_analysis" \
         and int(state.get("round", 0)) < int(state.get("max_rounds", 4)) \
         and len(evidence) < int(budget.get("max_queries", 8)) \
         and time.time() - float(budget.get("started_at", time.time())) < float(budget.get("deadline_seconds", 45))
@@ -970,7 +1008,7 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
     else:
         verdict, score = "PASS", 0.9
     verification = to_dict(Verification(verdict=verdict, score=score, successful_evidence=len(successful), total_evidence=len(evidence),
-                    missing=[item["query_id"] for item in missing], missing_evidence=missing, facts=facts,
+                    missing=[item.get("objective", item.get("reason", "unknown")) for item in replan_objectives], missing_evidence=replan_objectives, facts=facts,
                     checks={"coverage": {"ok": not coverage_issues, "issues": coverage_issues},
                                "consistency": {"ok": not consistency_issues, "issues": consistency_issues},
                                "freshness": {"ok": not freshness_issues, "issues": freshness_issues},
@@ -980,9 +1018,11 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
                     reason="证据足够" if verdict == "PASS" else ("存在可补查证据，进入局部重规划" if verdict == "REPLAN" else "仍缺少证明当前结论所需的证据，回答将明确标注限制")))
     history = list(state.get("replan_history", []))
     if verdict == "REPLAN":
-        history.append({"round": int(state.get("round", 0)), "missing": [item["query_id"] for item in missing],
+        history.append({"round": int(state.get("round", 0)), "objectives": [item.get("objective", "") for item in replan_objectives],
                         "reason": "Verifier hard/semantic checks found actionable missing evidence"})
     next_node = "planner" if verdict == "REPLAN" else "synthesizer"
+    verification["missing_requirements"] = replan_objectives
+    verification["replan_objectives"] = replan_objectives
     return {"verification": verification, "next_node": next_node, "replan_history": history,
             "trace": state.get("trace", []) + [_event(state, "verifier", started, llm_used=bool(semantic_critic), reasoning=f"证据校验结果: {verdict}") ]}
 
@@ -1031,12 +1071,7 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
     if (os.getenv("HARNESS_LLM_ENABLED", "false").lower() == "true"
             and verification.get("verdict") in {"PASS", "PARTIAL"} and claims):
         try:
-            prompt = ("你是已验证 Claim 的中文叙事渲染器。可以调整顺序、加入过渡句和结论边界，"
-                      "但不能增加事实 Claim、数字、对象、因果关系或根因判断。只能输出 JSON 对象："
-                      "{\"summary\":\"自然中文总结\",\"claims\":[{\"claim_id\":\"CL1\",\"text\":\"...\"}]}。"
-                      "summary 中只能使用 VerifiedClaims 的事实；必须保留所有 claim_id。"
-                      f"\nVerifiedClaims={json.dumps(claims, ensure_ascii=False, default=str)}"
-                      f"\n用户问题：{state['query']}")
+            prompt = renderer_prompt(claims=claims, query=state["query"])
             llm_result = await _llm_generate(state, prompt, timeout_seconds=10.0)
             if llm_result is None:
                 raise RuntimeError("LLM budget exhausted or unavailable")
@@ -1051,7 +1086,8 @@ async def synthesizer(state: Dict[str, Any]) -> Dict[str, Any]:
                     and all(isinstance(item.get("text"), str) and item["text"].strip() for item in rendered_claims)
                     and all(_renderer_grounded(next(claim["claim"] for claim in claims if claim["claim_id"] == item["claim_id"]), item["text"])
                             for item in rendered_claims)
-                    and _renderer_bidirectionally_grounded(claims, summary + " " + " ".join(item["text"] for item in rendered_claims))):
+                    and _renderer_bidirectionally_grounded(claims, summary + " " + " ".join(item["text"] for item in rendered_claims))
+                    and _renderer_causality_safe(claims, summary + " " + " ".join(item["text"] for item in rendered_claims))):
                 by_id = {item["claim_id"]: item["text"].strip() for item in rendered_claims}
                 answer = (summary.strip() + "\n\n" if summary.strip() else "") + "\n".join(
                     f"[{claim['claim_id']}] {by_id[claim['claim_id']]}" for claim in claims)

@@ -22,15 +22,16 @@ def validate_query_ir(ir: QueryIR, *, max_window_hours: int = 168) -> QueryIR:
         raise ValueError("query IR contains an unsupported field")
     if any(metric.get("function") not in ALLOWED_METRICS for metric in ir.metrics):
         raise ValueError("query IR contains an unsupported metric")
-    if ir.time_range:
-        try:
-            start = datetime.fromisoformat(ir.time_range.start_time.replace("Z", "+00:00"))
-            end = datetime.fromisoformat(ir.time_range.end_time.replace("Z", "+00:00"))
-            hours = (end - start).total_seconds() / 3600
-            if hours <= 0 or hours > max_window_hours:
-                raise ValueError("query IR time window is outside the allowed range")
-        except ValueError as exc:
-            raise ValueError("query IR time range is invalid") from exc
+    if not ir.time_range:
+        raise ValueError("query IR requires an explicit time range")
+    try:
+        start = datetime.fromisoformat(ir.time_range.start_time.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(ir.time_range.end_time.replace("Z", "+00:00"))
+        hours = (end - start).total_seconds() / 3600
+        if hours <= 0 or hours > max_window_hours:
+            raise ValueError("query IR time window is outside the allowed range")
+    except ValueError as exc:
+        raise ValueError("query IR time range is invalid") from exc
     region = ir.filters.get("region")
     if not isinstance(region, str) or not region.isidentifier() or not region.isupper():
         raise ValueError("query IR requires an uppercase region identifier")
@@ -68,5 +69,5 @@ def compile_query_ir(ir: QueryIR) -> tuple[str, dict[str, Any]]:
     if groups:
         sql += " GROUP BY " + ", ".join(groups)
     sql += " LIMIT %(limit)s"
-    return sql, {"start_time": ir.time_range.start_time if ir.time_range else None,
-                 "end_time": ir.time_range.end_time if ir.time_range else None, "limit": ir.limit}
+    return sql, {"start_time": ir.time_range.start_time,
+                 "end_time": ir.time_range.end_time, "limit": ir.limit}

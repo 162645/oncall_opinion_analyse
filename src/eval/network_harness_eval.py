@@ -77,7 +77,9 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
         supporting_queries = set(claim.get("supporting_query_ids", []))
         # rtt_summary is a universal measurement fact whenever ping.summary
         # is part of the contract; older fixtures may not list it explicitly.
-        fact_ok = not allowed or fact == "rtt_summary" or (fact in allowed and fact not in forbidden)
+        fact_aliases = {str(fact), str(claim.get("fact")), str(claim.get("fact_type"))}
+        fact_ok = not allowed or bool(fact_aliases & allowed) or fact == "rtt_summary"
+        fact_ok = fact_ok and not bool(fact_aliases & forbidden)
         evidence_ok = (not bound or bound <= claim_ids) and bool(bound or supporting_queries)
         if not (fact_ok and evidence_ok) or fact in forbidden:
             unsupported += 1
@@ -94,6 +96,8 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
     task_success = bool(fact_complete and unsupported == 0 and
                         (verification.get("verdict") != "unknown") and
                         (case.expected_verdict != "ABSTAIN" or verification.get("verdict") == "ABSTAIN"))
+    replans = state.get("replan_history", [])
+    usage = state.get("llm_usage", {})
     return {
         "case_id": case.case_id,
         "verdict": verification.get("verdict", "unknown"),
@@ -105,6 +109,10 @@ def score_case(case: NetworkEvalCase, state: Dict[str, Any]) -> Dict[str, Any]:
         "claim_presence": bool(claims),
         "claim_recall": claim_recall,
         "task_success": task_success,
+        "replan_count": len(replans),
+        "replan_success": bool(replans) and verification.get("verdict") in {"PASS", "PARTIAL"},
+        "llm_calls": int(usage.get("calls_used", 0)),
+        "llm_tokens": int(usage.get("tokens_in", 0)) + int(usage.get("tokens_out", 0)),
         "task_success_reasons": {
             "required_facts_complete": bool(fact_complete),
             "grounded_claims": unsupported == 0,
@@ -151,6 +159,10 @@ def evaluate_cases(results: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "claim_presence_rate": average("claim_presence"),
         "claim_recall": average("claim_recall"),
         "task_success_rate": average("task_success"),
+        "replan_success_rate": average("replan_success"),
+        "average_replans": average("replan_count"),
+        "average_llm_calls": average("llm_calls"),
+        "average_llm_tokens": average("llm_tokens"),
     }
 
 

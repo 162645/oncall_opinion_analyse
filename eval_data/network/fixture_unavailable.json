@@ -1,0 +1,5 @@
+{
+  "ping.summary": {"__error__": "ClickHouse unavailable", "error_kind": "permanent"},
+  "ping.trend": {"__error__": "ClickHouse unavailable", "error_kind": "permanent"},
+  "ping.by_asn": {"__error__": "ClickHouse unavailable", "error_kind": "permanent"}
+}

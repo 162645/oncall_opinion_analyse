@@ -53,7 +53,9 @@ class EvidenceDrivenHarness:
         verification = state.get("verification", {})
         task = state.get("task", {})
         plan = state.get("plan", {})
-        should_retry = (verification.get("verdict") in {"ABSTAIN", "PARTIAL", "REPLAN"}
+        # Only REPLAN is an instruction to continue the graph. PARTIAL and
+        # ABSTAIN are terminal, user-visible outcomes.
+        should_retry = (verification.get("verdict") == "REPLAN"
                         and task.get("kind") == "network_analysis"
                         and bool(plan.get("steps"))
                         and int(state.get("round", 0)) < int(state.get("max_rounds", 4)))
