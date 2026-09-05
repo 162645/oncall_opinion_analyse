@@ -39,7 +39,8 @@ class TaskSpec(HarnessModel):
 
 class PlanStep(HarnessModel):
     action_type: Literal["catalog_query", "generated_query"] = "catalog_query"
-    query_id: str
+    query_id: Optional[str] = None
+    query_ir: Optional[Dict[str, Any]] = None
     params: Dict[str, Any] = Field(default_factory=dict)
     purpose: str = "collect evidence"
     expected_information_gain: Literal["high", "medium", "low"] = "medium"

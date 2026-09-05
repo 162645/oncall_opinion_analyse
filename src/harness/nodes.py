@@ -13,7 +13,8 @@ from src.runtime import PermissionLevel, ToolDefinition, ToolRuntime
 from .catalog import CATALOG, catalog_description, compile_sql, get_query_spec
 from .ledger import EvidenceLedger
 from .mcp_adapter import CatalogMCPAdapter
-from .models import AnalysisPlan, ExecutionResult, PlanningContext, RetrievalPlan, SemanticReview, TaskSpec, Verification, to_dict
+from .models import AnalysisPlan, ExecutionResult, PlanningContext, QueryIR, RetrievalPlan, SemanticReview, TaskSpec, Verification, to_dict
+from .query_ir import compile_query_ir, validate_query_ir
 
 
 def _catalog_runtime() -> ToolRuntime:
@@ -46,6 +47,20 @@ def _catalog_runtime() -> ToolRuntime:
             handler=handler, permission=PermissionLevel.READ,
             timeout_seconds=float(os.getenv("AGENT_TOOL_TIMEOUT_SECONDS", "8")),
         ))
+    # Long-tail capability: the input is QueryIR, never SQL. Compilation and
+    # execution still pass through the same ToolRuntime permission/timeout/
+    # retry/audit pipeline as catalog primitives.
+    def generated_handler(query_ir):
+        ir = validate_query_ir(QueryIR.model_validate(query_ir), max_window_hours=int(os.getenv("AGENT_MAX_QUERY_WINDOW_HOURS", "168")))
+        sql, bindings = compile_query_ir(ir)
+        rows = get_clickhouse_client().execute(sql, bindings)
+        return {"rows": rows}
+    runtime.register(ToolDefinition(
+        name="query.ir", description="受控 Query IR 长尾查询（禁止裸 SQL）",
+        parameters={"type": "object", "required": ["query_ir"], "properties": {"query_ir": QueryIR.model_json_schema()}},
+        handler=generated_handler, permission=PermissionLevel.READ,
+        timeout_seconds=float(os.getenv("AGENT_TOOL_TIMEOUT_SECONDS", "8")),
+    ))
     return runtime
 
 
@@ -363,6 +378,8 @@ async def context(state: Dict[str, Any]) -> Dict[str, Any]:
                     "semantic_hints": ["measurement evidence is authoritative", "context evidence is non-causal background"],
                     "knowledge": [], "graph_context": [], "skill_matches": [], "data_source": "ClickHouse",
                     "retrieval_plan": {"need_retrieval": False, "sources": []}}
+    context_data["catalog"].append({"query_id": "query.ir", "description": "受控 Query IR 长尾查询（仅 long_tail）",
+                                    "tool_query_type": "query_ir", "evidence_type": "measurement", "cost_class": "high"})
     # Network investigations also receive semantic context. Retrieval is an
     # input to planning, never a substitute for measured evidence.
     needs_context = (task.get("kind") == "knowledge" or task.get("planning_mode") == "long_tail"
@@ -584,9 +601,25 @@ async def _llm_plan(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         candidate_ids = set(CATALOG) - observed
         safe = []
         for item in proposed_queries[:2]:
-            if not isinstance(item, dict) or item.get("query_id") not in CATALOG:
+            if not isinstance(item, dict):
                 continue
-            query_id = item["query_id"]
+            query_id = item.get("query_id")
+            if item.get("action_type") == "generated_query" or query_id == "query.ir":
+                if task.get("planning_mode") != "long_tail" or not isinstance(item.get("query_ir"), dict):
+                    continue
+                try:
+                    ir = validate_query_ir(QueryIR.model_validate(item["query_ir"]))
+                    compile_query_ir(ir)
+                except Exception:
+                    continue
+                safe.append({"action_type": "generated_query", "query_id": "query.ir",
+                             "query_ir": ir.model_dump(mode="json"), "params": {"query_ir": ir.model_dump(mode="json")},
+                             "purpose": str(item.get("reason") or "长尾 Query IR")[:200],
+                             "evidence_goal": str(item.get("evidence_goal") or "补充长尾测量证据")[:200],
+                             "expected_information_gain": "high"})
+                break
+            if query_id not in CATALOG:
+                continue
             if query_id in observed or (candidate_ids and query_id not in candidate_ids):
                 continue
             params = dict(item.get("params") or {})
@@ -706,9 +739,14 @@ async def _execute_with_runtime(state: Dict[str, Any], runtime: ToolRuntime) -> 
         try:
             # Catalog validation is the first SQL safety boundary. The model
             # cannot introduce an arbitrary tool or query type here.
-            spec = get_query_spec(query_id)
-            if params.get("query_type") != spec.tool_query_type:
-                raise ValueError(f"query_type mismatch for {query_id}")
+            if query_id == "query.ir":
+                if not isinstance(params.get("query_ir"), dict):
+                    raise ValueError("query.ir requires a structured query_ir")
+                validate_query_ir(QueryIR.model_validate(params["query_ir"]))
+            else:
+                spec = get_query_spec(query_id)
+                if params.get("query_type") != spec.tool_query_type:
+                    raise ValueError(f"query_type mismatch for {query_id}")
             timeout_seconds = float(os.getenv("AGENT_TOOL_TIMEOUT_SECONDS", "8"))
             # The legacy ClickHouse client is synchronous internally. Move it
             # off the event loop so a dead database cannot freeze the graph.
@@ -780,6 +818,12 @@ async def verifier(state: Dict[str, Any]) -> Dict[str, Any]:
     freshness_issues = []
     claimability_issues = []
     coverage_issues = []
+    if ledger.has("query.ir"):
+        item = ledger.observed("query.ir")[0]
+        facts.append({"fact_type": "generated_measurement", "status": "observed",
+                      "fact": "generated_measurement", "claim": "已通过受控 Query IR 获得长尾测量结果",
+                      "value": {"row_count": len((item.get("data") or {}).get("rows", []))},
+                      "evidence_ids": [item["evidence_id"]]})
     trend = (ledger.observed("ping.trend")[0].get("data") or {}).get("trend_data", []) if ledger.has("ping.trend") else []
     anomaly = False
     if ledger.has("ping.summary"):
