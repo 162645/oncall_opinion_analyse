@@ -2,6 +2,12 @@
 
 > 本文档总结了面试时可能被问到的关键技术点和设计决策
 
+> **当前实现边界（以此为准）**：Chat API 的生产主链路是
+> `Understand → Context → Planner → Executor → Verifier → Synthesizer`。
+> 本文后续出现的 Router、Reflection、Multi-Agent、Debate 等内容均为
+> Legacy 设计讨论，不属于当前 Chat API 执行路径；当前系统不是 Multi-Agent
+> 和完全自由 ReAct。当前实现以 `src/harness/graph.py` 为准。
+
 ---
 
 ## 一、项目概述
@@ -85,7 +91,7 @@ A:
 
 ## 三、Agent 系统设计
 
-### 3.1 多 Agent 协作模式
+### 3.1 Legacy 多 Agent 协作模式（历史记录，不属于当前主链路）
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -114,7 +120,7 @@ A:
 | Hierarchical | 多层级分析 | 层级间并行，效率高 |
 | Debate | 争议性问题 | 多角度分析，结果更可靠 |
 
-### 3.2 LangGraph 状态机设计
+### 3.2 当前 LangGraph 六节点状态机
 
 ```python
 # 状态定义
@@ -148,14 +154,16 @@ A:
 **Q: LangGraph 状态机如何保证执行可控？**
 
 A:
-我们将执行过程拆成 Router、Knowledge、Tools、Reasoning、Reflection 和 Output 节点：
+当前执行过程拆成 Understand、Context、Planner、Executor、Verifier 和 Synthesizer 六个节点：
 
 ```
 流程:
-1. Router 根据意图决定后续节点
-2. Knowledge 和 Tools 产生可追踪证据
-3. Reflection 根据置信度决定重试或输出
-4. 高风险工具可在执行后进入人工审批
+1. Understand 由 LLM 解析自然语言并经过 TaskSpec Guard
+2. Context 编排 Skill、Knowledge、Graph 等背景信息
+3. Planner 选择受控 Catalog Primitive 或经 Guard 的 Query IR
+4. Executor 通过 ToolRuntime 统一执行并生成 Measurement Evidence
+5. Verifier 运行硬规则与 Semantic Critic，必要时返回 REPLAN
+6. Synthesizer 只渲染已绑定 Evidence 的 Verified Claims
 
 实现：
 - max_iterations 限制反思次数

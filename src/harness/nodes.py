@@ -15,6 +15,7 @@ from .ledger import EvidenceLedger
 from .mcp_adapter import CatalogMCPAdapter
 from .models import AnalysisPlan, ExecutionResult, PlanningContext, QueryIR, RetrievalPlan, SemanticReview, TaskSpec, Verification, to_dict
 from .query_ir import compile_query_ir, validate_query_ir
+from .prompts import PROMPT_VERSION
 
 
 def _catalog_runtime() -> ToolRuntime:
@@ -146,7 +147,7 @@ def _event(state: Dict[str, Any], node: str, started: float, status: str = "succ
              "action": node, "duration_ms": int((time.perf_counter() - started) * 1000), "status": status, **extra}
     if event.get("llm_used"):
         event.setdefault("model", os.getenv("LLM_MODEL", "deepseek-chat"))
-        event.setdefault("prompt_version", os.getenv("HARNESS_PROMPT_VERSION", "v1"))
+        event.setdefault("prompt_version", os.getenv("HARNESS_PROMPT_VERSION", PROMPT_VERSION))
         event.setdefault("token_usage", dict(state.get("llm_usage", {})))
     return event
 
